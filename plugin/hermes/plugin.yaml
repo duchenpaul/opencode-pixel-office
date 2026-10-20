@@ -1,5 +1,5 @@
 name: opencode-pixel-office
-version: "1.0.0"
+version: "1.2.2"
 description: "Observe Hermes sessions, tools, subagents and approvals in the shared Pixel Office dashboard."
 hooks:
   - on_session_start

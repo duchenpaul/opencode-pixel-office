@@ -15,6 +15,32 @@ opencode-pixel-office start
 
 The dashboard opens at `http://localhost:5100`.
 
+### Installing from git
+
+```bash
+npm install -g git+https://github.com/duchenpaul/opencode-pixel-office.git#hermes
+opencode-pixel-office install
+opencode-pixel-office start
+curl -sf http://localhost:5100/ | head -1
+```
+
+Git and npm packages include the prebuilt client, so no development dependencies
+or install-time build are needed. This avoids npm's
+[global git prepare bug](https://github.com/npm/cli/issues/8440).
+The verification command should print `<!doctype html>`.
+
+`start` uses the installed app in `~/.opencode/pixel-office/` when available,
+falling back to the package copy before installation. Rerun `install` after
+upgrading the package to refresh the installed app. Server stdout and stderr
+are appended to `~/.opencode/pixel-office/server.log`, including startup failures.
+On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, no browser is launched; open
+the printed URL from a machine with a browser.
+
+If startup reports `client bundle missing`, run `npm run build:client` in a
+source checkout with development dependencies installed, then rerun `install`.
+Do not try to build in the standalone app directory, which contains only the
+built client and runtime dependencies.
+
 ## What Gets Installed
 
 The `install` command sets up everything automatically:
@@ -116,7 +142,7 @@ This removes:
 ## For Developers
 
 ```bash
-git clone https://github.com/anthropics/opencode-pixel-office.git
+git clone --branch hermes https://github.com/duchenpaul/opencode-pixel-office.git
 cd opencode-pixel-office
 npm install
 
@@ -124,10 +150,15 @@ npm install
 npm start              # Server
 npm run dev:client     # Client (separate terminal)
 
-# Build
+# Build (commit client/dist alongside client source changes)
 npm run build:client
 
 # Focused integration tests
 node --test tests/*.test.js
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
+
+`npm pack` ships the prebuilt dashboard. `npm publish` rebuilds it using
+`prepublishOnly`. `package.json` is the version source: `npm version <version>`
+updates the lockfile and Hermes manifest, and client builds also synchronize the
+manifest.

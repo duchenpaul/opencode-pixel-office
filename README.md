@@ -29,6 +29,24 @@ opencode-pixel-office start
 
 That's it! The dashboard opens at `http://localhost:5100`.
 
+### Install the Hermes branch from git
+
+```bash
+npm install -g git+https://github.com/duchenpaul/opencode-pixel-office.git#hermes
+opencode-pixel-office install
+opencode-pixel-office start
+curl -sf http://localhost:5100/ | head -1
+```
+
+The last command should print `<!doctype html>`. The built dashboard is tracked
+in git and included in npm packages, so installation does not need build tools.
+This avoids npm versions affected by
+[global git install build failures](https://github.com/npm/cli/issues/8440).
+`start` prefers the installed app in `~/.opencode/pixel-office/` over the npm
+package copy. After upgrading the package, rerun `install` to update it.
+Server output is appended to `~/.opencode/pixel-office/server.log`. On headless
+Linux, `start` prints the dashboard URL without trying to open a browser.
+
 ## CLI Commands
 
 | Command | Description |
@@ -117,7 +135,7 @@ Monitor your agents from your phone!
 
 ```bash
 # Clone the repo
-git clone https://github.com/anthropics/opencode-pixel-office.git
+git clone --branch hermes https://github.com/duchenpaul/opencode-pixel-office.git
 cd opencode-pixel-office
 npm install
 
@@ -130,6 +148,12 @@ npm run dev:client
 # Build client for production
 npm run build:client
 ```
+
+The version in `package.json` is authoritative. `npm version <version>` updates
+the lockfile and Hermes manifest; client builds also synchronize the Hermes
+manifest. After client changes, run `npm run build:client` and commit
+`client/dist` alongside the sources. `npm pack` includes this prebuilt dashboard;
+`npm publish` rebuilds it through `prepublishOnly`.
 
 ## Project Structure
 

@@ -1,11 +1,12 @@
 {
   "name": "opencode-pixel-office",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "type": "module",
   "files": [
     "bin",
     "client/dist",
     "plugin",
+    "scripts/sync-hermes-version.js",
     "server",
     "README.md"
   ],
@@ -15,8 +16,11 @@
   "scripts": {
     "start": "tsx server/index.ts",
     "dev:client": "vite --config client/vite.config.ts",
+    "prebuild:client": "node scripts/sync-hermes-version.js",
     "build:client": "vite build --config client/vite.config.ts",
-    "preview:client": "vite preview --config client/vite.config.ts"
+    "preview:client": "vite preview --config client/vite.config.ts",
+    "prepublishOnly": "npm run build:client",
+    "version": "node scripts/sync-hermes-version.js"
   },
   "dependencies": {
     "@pixi/react": "^7.1.1",

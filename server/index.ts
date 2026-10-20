@@ -15,6 +15,11 @@ const CLIENT_DIR = fs.existsSync(CLIENT_DIST_DIR)
   ? CLIENT_DIST_DIR
   : path.join(__dirname, "..", "client");
 
+if (!fs.existsSync(path.join(CLIENT_DIR, "index.html"))) {
+  console.error("[PixelOffice] client bundle missing — run `npm run build:client`");
+  process.exit(1);
+}
+
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 app.use(express.static(CLIENT_DIR));

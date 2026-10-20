@@ -73,6 +73,21 @@ const printHelp = () => {
   console.log("  opencode-pixel-office status       # Check what's installed");
 };
 
+const openBrowser = (url) => {
+  const openCmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  if (openCmd === "xdg-open" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    console.log(`Dashboard: ${url} (no graphical display; browser not opened)`);
+    return;
+  }
+  try {
+    execSync(`${openCmd} ${url}`);
+    console.log(`Opened ${url}`);
+  } catch (error) {
+    console.warn(`Could not open browser: ${error.message}`);
+    console.log(`Dashboard: ${url}`);
+  }
+};
+
 const loadConfig = () => {
   try {
     if (fs.existsSync(PIXEL_OFFICE_CONFIG_PATH)) {
@@ -341,6 +356,10 @@ const removeClaudeCodeHooks = () => {
 // Install the standalone app (server + client)
 const installApp = async (port) => {
   const rootSource = path.resolve(__dirname, "..");
+  const clientDist = path.join(rootSource, "client", "dist");
+  if (!fs.existsSync(path.join(clientDist, "index.html"))) {
+    throw new Error("client bundle missing — run `npm run build:client`");
+  }
 
   console.log(`\nInstalling Pixel Office app...`);
   fs.mkdirSync(DEFAULT_APP_DIR, { recursive: true });
@@ -349,10 +368,7 @@ const installApp = async (port) => {
   copyRecursiveSync(path.join(rootSource, "server"), path.join(DEFAULT_APP_DIR, "server"));
 
   // Copy client/dist
-  const clientDist = path.join(rootSource, "client", "dist");
-  if (fs.existsSync(clientDist)) {
-    copyRecursiveSync(clientDist, path.join(DEFAULT_APP_DIR, "client", "dist"));
-  }
+  copyRecursiveSync(clientDist, path.join(DEFAULT_APP_DIR, "client", "dist"));
 
   // Copy package.json
   fs.copyFileSync(path.join(rootSource, "package.json"), path.join(DEFAULT_APP_DIR, "package.json"));
@@ -373,7 +389,7 @@ const installApp = async (port) => {
     });
     console.log(`  ✓ App installed`);
   } catch (e) {
-    console.error("  ! Failed to install dependencies");
+    throw new Error(`Failed to install app dependencies: ${e.stderr?.toString().trim() || e.message}`);
   }
 };
 
@@ -483,10 +499,10 @@ const run = async () => {
     const globalServerPath = path.join(DEFAULT_APP_DIR, "server", "index.ts");
 
     let serverCwd;
-    if (fs.existsSync(localServerPath)) {
-      serverCwd = rootSource;
-    } else if (fs.existsSync(globalServerPath)) {
+    if (fs.existsSync(globalServerPath)) {
       serverCwd = DEFAULT_APP_DIR;
+    } else if (fs.existsSync(localServerPath)) {
+      serverCwd = rootSource;
     } else {
       console.error("Server not found. Run 'opencode-pixel-office install' first.");
       process.exit(1);
@@ -498,11 +514,7 @@ const run = async () => {
       if (pidOutput) {
         console.log(`Pixel Office is already running on port ${port}`);
         const url = `http://localhost:${port}`;
-        const openCmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-        try {
-          execSync(`${openCmd} ${url}`);
-        } catch {}
-        console.log(`Opened ${url}`);
+        openBrowser(url);
         process.exit(0);
       }
     } catch {}
@@ -526,12 +538,20 @@ const run = async () => {
 
     const { spawn } = await import("node:child_process");
 
-    const child = spawn(tsxBin, [serverScript], {
-      cwd: serverCwd,
-      env: { ...process.env, PORT: String(port) },
-      detached: true,
-      stdio: "ignore",
-    });
+    fs.mkdirSync(DEFAULT_APP_DIR, { recursive: true });
+    const logPath = path.join(DEFAULT_APP_DIR, "server.log");
+    const logFd = fs.openSync(logPath, "a");
+    let child;
+    try {
+      child = spawn(tsxBin, [serverScript], {
+        cwd: serverCwd,
+        env: { ...process.env, PORT: String(port) },
+        detached: true,
+        stdio: ["ignore", logFd, logFd],
+      });
+    } finally {
+      fs.closeSync(logFd);
+    }
 
     child.on("error", (err) => {
       console.error(`Failed to start server: ${err.message}`);
@@ -540,15 +560,14 @@ const run = async () => {
 
     child.unref();
 
-    console.log(`Pixel Office server started on port ${port} (PID: ${child.pid})`);
-
     await new Promise((r) => setTimeout(r, 1500));
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`Server exited during startup. See ${logPath}`);
+    }
+    console.log(`Pixel Office server started on port ${port} (PID: ${child.pid})`);
+    console.log(`Server log: ${logPath}`);
     const url = `http://localhost:${port}`;
-    const openCmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-    try {
-      execSync(`${openCmd} ${url}`);
-    } catch {}
-    console.log(`Opened ${url}`);
+    openBrowser(url);
     process.exit(0);
   }
 
