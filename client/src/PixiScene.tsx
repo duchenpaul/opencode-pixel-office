@@ -10,7 +10,7 @@ import {
   TextMetrics,
   TextStyle,
 } from "pixi.js";
-import type { Agent, Interaction, SessionInfo, TodoSummary } from "./useOfficeState";
+import type { Agent, Interaction, SessionInfo, TodoSummary, OfficeSource } from "./useOfficeState";
 import { ActivityBubble } from "./components/pixi/ActivityBubble";
 import type { ActivityBubbleData } from "./components/pixi/ActivityBubble";
 import { MessageBubble } from "./components/pixi/MessageBubble";
@@ -96,7 +96,7 @@ type PixiSceneProps = {
   lastTodoSummary: TodoSummary | null;
   selectedAgentId: string | null;
   onSelectAgent: (id: string | null) => void;
-  activeTab?: "opencode" | "claude";
+  activeTab?: OfficeSource;
 };
 
 const TILE = 4;
@@ -339,6 +339,8 @@ const pickTagColors = (sessionId?: string): [number, number] => {
 
 const statusBubbleText = (status: string) => {
   switch (status) {
+    case "waiting":
+      return "awaiting approval";
     case "idle":
       return "idle";
     case "thinking":
@@ -492,8 +494,9 @@ const buildTileTexture = (type: string) => {
   texture.baseTexture.scaleMode = SCALE_MODES.NEAREST;
   return texture;
 };
-const TitleBadge = ({ x, y, activeTab }: { x: number; y: number; activeTab?: "opencode" | "claude" }) => {
-  const titleText = activeTab === "claude" ? "Claude Office" : "OpenCode Office";
+const TitleBadge = ({ x, y, activeTab }: { x: number; y: number; activeTab?: OfficeSource }) => {
+  const titleText = activeTab === "hermes" ? "Hermes Office"
+    : activeTab === "claude" ? "Claude Office" : "OpenCode Office";
   const titleStyle = useMemo(
     () =>
       new TextStyle({
@@ -1420,11 +1423,14 @@ const SceneLayer = ({
             agent.lastStreamingAt &&
             Date.now() - agent.lastStreamingAt < TYPING_TTL_MS;
           const statusText = statusBubbleText(agent.status || "working");
+          const awaitingApproval = agent.source === "hermes" && agent.status === "waiting";
           const snippet = agent.lastMessageSnippet || "";
           const showGoodbye = Boolean(sprite.goodbyeUntil && Date.now() < sprite.goodbyeUntil);
           const goodbyeText = "bye";
           const messageText = showGoodbye
             ? goodbyeText
+            : awaitingApproval
+              ? statusText
             : isStreaming
               ? ".".repeat(Math.max(1, Math.floor(time / 250) % 4))
               : snippet;
@@ -1449,7 +1455,7 @@ const SceneLayer = ({
             !isMessageUpdateEvent &&
             !isSessionEvent &&
             eventBadgeColor !== undefined;
-          const isPermissionEvent = hasRecentEvent && eventType === "permission.asked";
+          const isPermissionEvent = awaitingApproval || (hasRecentEvent && eventType === "permission.asked");
           const isWaitingForInput = hasRecentEvent && eventType === "tui.toast.show";
           const activityEmoji =
             isPermissionEvent
@@ -1492,7 +1498,7 @@ const SceneLayer = ({
           const activityBubbleSize = 18;
           const activityBubbleX = sprite.x - activityBubbleSize / 2;
           const messageBubble: MessageBubbleData = {
-            show: Boolean(showGoodbye || (agent.lastMessageSnippet && isMessageFresh)),
+            show: Boolean(showGoodbye || awaitingApproval || (agent.lastMessageSnippet && isMessageFresh)),
             x: messageBubbleX,
             y: messageBubbleY,
             width: messageBubbleWidth,

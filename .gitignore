@@ -11,3 +11,4 @@ pnpm-debug.log*
 vite.config.ts.timestamp-*
 *.tsbuildinfo
 coverage/
+__pycache__/

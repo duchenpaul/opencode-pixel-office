@@ -5,8 +5,9 @@ import { ScreenFrame } from "./components/ScreenFrame";
 import { SessionPanel } from "./components/SessionPanel";
 import { TodoPanel } from "./components/TodoPanel";
 import { useOfficeState } from "./useOfficeState";
+import type { OfficeSource } from "./useOfficeState";
 
-type OfficeTab = "opencode" | "claude";
+type OfficeTab = OfficeSource;
 
 const App = () => {
   const {
@@ -54,6 +55,10 @@ const App = () => {
   );
   const claudeCount = useMemo(
     () => agents.filter((a) => a.source === "claude").length,
+    [agents]
+  );
+  const hermesCount = useMemo(
+    () => agents.filter((a) => a.source === "hermes").length,
     [agents]
   );
 
@@ -104,6 +109,16 @@ const App = () => {
             <span>Claude</span>
             {claudeCount > 0 && (
               <span className="tab-badge">{claudeCount}</span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab("hermes")}
+            className={`office-tab ${activeTab === "hermes" ? "active" : ""}`}
+          >
+            <span className="tab-icon">H</span>
+            <span>Hermes</span>
+            {hermesCount > 0 && (
+              <span className="tab-badge">{hermesCount}</span>
             )}
           </button>
         </div>

@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +19,10 @@ const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const CLAUDE_HOOK_DIR = path.join(CLAUDE_DIR, "hooks");
 const CLAUDE_HOOK_FILE = path.join(CLAUDE_HOOK_DIR, "opencode-pixel-office-hook.js");
 const CLAUDE_SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json");
+const HERMES_PLUGIN_ID = "opencode-pixel-office";
+const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), ".hermes");
+const HERMES_PLUGIN_DIR = path.join(HERMES_HOME, "plugins", HERMES_PLUGIN_ID);
+const HERMES_MARKER = path.join(HERMES_PLUGIN_DIR, ".pixel-office-owned.json");
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -31,6 +35,13 @@ const shouldVersion = args.includes("--version") || args.includes("-v");
 const yesFlag = args.includes("--yes") || args.includes("-y");
 const portIndex = args.findIndex((arg) => arg === "--port");
 const portArg = portIndex !== -1 ? args[portIndex + 1] : null;
+const parsePort = (value) => {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("--port must be an integer between 1 and 65535");
+  }
+  return port;
+};
 
 const getVersion = () => {
   try {
@@ -45,9 +56,9 @@ const getVersion = () => {
 const printHelp = () => {
   console.log(`opencode-pixel-office v${getVersion()}\n`);
   console.log("A pixel-art office visualization for AI coding assistants.");
-  console.log("Works with both OpenCode and Claude Code simultaneously.\n");
+  console.log("Works with OpenCode, Claude Code and Hermes simultaneously.\n");
   console.log("Usage:");
-  console.log("  opencode-pixel-office install [options]    Install for both OpenCode & Claude");
+  console.log("  opencode-pixel-office install [options]    Install for OpenCode, Claude & Hermes");
   console.log("  opencode-pixel-office start [options]      Start the server");
   console.log("  opencode-pixel-office stop                 Stop the server");
   console.log("  opencode-pixel-office status               Show installation status");
@@ -57,7 +68,7 @@ const printHelp = () => {
   console.log("  --yes, -y       Skip confirmation prompts");
   console.log("  --version, -v   Show version number");
   console.log("\nExamples:");
-  console.log("  opencode-pixel-office install      # Install for OpenCode + Claude Code");
+  console.log("  opencode-pixel-office install      # Install for OpenCode + Claude Code + Hermes");
   console.log("  opencode-pixel-office start        # Start server & open browser");
   console.log("  opencode-pixel-office status       # Check what's installed");
 };
@@ -131,6 +142,71 @@ const isOpencodeInstalled = () => {
 // Check if claude-code hooks are installed
 const isClaudeCodeInstalled = () => {
   return fs.existsSync(CLAUDE_HOOK_FILE);
+};
+
+const hermesInstallation = () => {
+  if (!fs.existsSync(HERMES_MARKER)) return null;
+  const marker = JSON.parse(fs.readFileSync(HERMES_MARKER, "utf8"));
+  if (marker.owner !== HERMES_PLUGIN_ID) {
+    throw new Error(`Unrecognized Hermes plugin ownership marker: ${HERMES_MARKER}`);
+  }
+  return marker;
+};
+
+const toggleHermesPlugin = (action) => {
+  try {
+    execFileSync("hermes", ["plugins", action, HERMES_PLUGIN_ID], {
+      stdio: "pipe",
+      env: { ...process.env, HERMES_HOME },
+      timeout: 30000,
+    });
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      console.warn(`  ! Hermes CLI not found. Run 'hermes plugins ${action} ${HERMES_PLUGIN_ID}' with HERMES_HOME=${HERMES_HOME}`);
+      return false;
+    }
+    const detail = error.stderr?.toString().trim() || error.message;
+    throw new Error(`Hermes plugin ${action} failed: ${detail}. Retry 'hermes plugins ${action} ${HERMES_PLUGIN_ID}'.`);
+  }
+};
+
+const installHermesPlugin = () => {
+  const existing = hermesInstallation();
+  if (fs.existsSync(HERMES_PLUGIN_DIR) && !existing) {
+    throw new Error(`Refusing to overwrite an unowned Hermes plugin: ${HERMES_PLUGIN_DIR}`);
+  }
+  fs.mkdirSync(HERMES_PLUGIN_DIR, { recursive: true });
+  for (const name of ["__init__.py", "plugin.yaml"]) {
+    fs.copyFileSync(path.resolve(__dirname, "..", "plugin", "hermes", name), path.join(HERMES_PLUGIN_DIR, name));
+  }
+  fs.writeFileSync(HERMES_MARKER, JSON.stringify({ owner: HERMES_PLUGIN_ID, enabled: false }));
+  const enabled = toggleHermesPlugin("enable");
+  fs.writeFileSync(HERMES_MARKER, JSON.stringify({ owner: HERMES_PLUGIN_ID, enabled }));
+  console.log(`  ✓ Hermes plugin files installed${enabled ? " and enabled" : " (enablement pending)"}`);
+  console.log("  Start a new Hermes session to load the plugin.");
+  return enabled;
+};
+
+const removeHermesPlugin = () => {
+  if (!hermesInstallation()) {
+    console.log("- Owned Hermes plugin not found; other plugins left untouched");
+    return;
+  }
+  toggleHermesPlugin("disable");
+  for (const name of ["__init__.py", "plugin.yaml"]) {
+    const target = path.join(HERMES_PLUGIN_DIR, name);
+    if (fs.existsSync(target)) fs.unlinkSync(target);
+  }
+  const remaining = fs.readdirSync(HERMES_PLUGIN_DIR).filter((name) => name !== ".pixel-office-owned.json");
+  if (remaining.length === 0) {
+    fs.unlinkSync(HERMES_MARKER);
+    fs.rmdirSync(HERMES_PLUGIN_DIR);
+  } else {
+    // Retain ownership for safe reinstall when Python caches or user files remain.
+    fs.writeFileSync(HERMES_MARKER, JSON.stringify({ owner: HERMES_PLUGIN_ID, enabled: false }));
+  }
+  console.log("✓ Removed owned Hermes plugin files (restart Hermes to unload observers)");
 };
 
 // Check if app is installed
@@ -312,6 +388,12 @@ const run = async () => {
     console.log(`\nPixel Office Status:\n`);
     console.log(`  OpenCode plugin:  ${isOpencodeInstalled() ? "✓ Installed" : "✗ Not installed"}`);
     console.log(`  Claude Code hooks: ${isClaudeCodeInstalled() ? "✓ Installed" : "✗ Not installed"}`);
+    const hermes = hermesInstallation();
+    const hermesFiles = ["__init__.py", "plugin.yaml"].every((name) =>
+      fs.existsSync(path.join(HERMES_PLUGIN_DIR, name)));
+    console.log(`  Hermes plugin:     ${hermes && hermesFiles
+      ? `✓ Installed (${hermes.enabled ? "enabled at last install" : "enablement pending"})`
+      : "✗ Not installed or incomplete"}`);
     console.log(`  App/Server:        ${isAppInstalled() ? "✓ Installed" : "✗ Not installed"}`);
 
     const config = loadConfig();
@@ -330,6 +412,7 @@ const run = async () => {
 
   // INSTALL
   if (shouldInstall) {
+    const port = portIndex !== -1 ? parsePort(portArg) : null;
     console.log(`\nInstalling Pixel Office...\n`);
 
     // Install OpenCode plugin
@@ -340,12 +423,14 @@ const run = async () => {
     console.log("\nClaude Code:");
     installClaudeCodeHooks();
 
+    console.log("\nHermes:");
+    const hermesEnabled = installHermesPlugin();
+
     // Install app
-    const port = portArg ? parseInt(portArg, 10) : null;
     await installApp(port);
 
     console.log("\n✓ Installation complete!");
-    console.log("\nBoth OpenCode and Claude Code are now connected.");
+    console.log(`\nOpenCode and Claude Code configured. Hermes ${hermesEnabled ? "enabled" : "requires manual enablement"}.`);
     console.log("Run 'opencode-pixel-office start' to launch the server.");
     process.exit(0);
   }
@@ -356,6 +441,8 @@ const run = async () => {
     const port = config.port || 5100;
 
     console.log("\nUninstalling Pixel Office...\n");
+
+    removeHermesPlugin();
 
     console.log("Stopping server...");
     if (!stopServer(port)) {
@@ -385,7 +472,10 @@ const run = async () => {
   // START
   if (shouldStart) {
     const config = loadConfig();
-    const port = portArg ? parseInt(portArg, 10) : config.port || 5100;
+    const port = portIndex !== -1 ? parsePort(portArg) : config.port || 5100;
+    if (portArg) {
+      saveConfig({ ...config, port });
+    }
     const serverScript = "server/index.ts";
 
     const rootSource = path.resolve(__dirname, "..");

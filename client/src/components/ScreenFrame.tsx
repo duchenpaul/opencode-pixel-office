@@ -1,6 +1,6 @@
 import { PixiScene } from "../PixiScene";
 import { BossBox } from "./BossBox";
-import type { Agent, Interaction, SessionInfo, TodoSummary } from "../useOfficeState";
+import type { Agent, Interaction, SessionInfo, TodoSummary, OfficeSource } from "../useOfficeState";
 
 type ScreenFrameProps = {
   bossMessageText: string;
@@ -12,7 +12,7 @@ type ScreenFrameProps = {
   lastTodoSummary: TodoSummary | null;
   selectedAgentId: string | null;
   onSelectAgent: (id: string | null) => void;
-  activeTab?: "opencode" | "claude";
+  activeTab?: OfficeSource;
 };
 
 const ScreenFrame = ({

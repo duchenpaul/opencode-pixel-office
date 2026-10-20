@@ -72,7 +72,7 @@ type OfficeState = {
 
 type EventPayload = {
   type?: string;
-  source?: "opencode" | "claude";
+  source?: "opencode" | "claude" | "hermes";
   properties?: Record<string, any>;
 };
 
@@ -368,6 +368,9 @@ const resolveAgentIdsForEvent = (event: EventPayload) => {
   const props = event?.properties || {};
   const info = props.info || {};
   const sessionId = extractSessionId(event);
+  if (event.source === "hermes") {
+    return sessionId ? [`${sessionId}:agent`] : [];
+  }
   const agentName = safeString(info.agent ?? "", "");
   if (!sessionId) {
     const direct = extractAgentId(event);
@@ -449,6 +452,37 @@ const extractActiveSessionId = (event: EventPayload) => {
 
 const applySessionLifecycle = (event: EventPayload) => {
   const type = getEventType(event);
+  if (type === "session.deleted" && event.source === "hermes") {
+    const removedSessions = new Set([extractSessionId(event)]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const agent of officeState.agents.values()) {
+        if (removedSessions.has(agent.parentSessionId) && !removedSessions.has(agent.sessionId)) {
+          removedSessions.add(agent.sessionId);
+          changed = true;
+        }
+      }
+    }
+    const removedAgents = new Set<string>();
+    for (const [id, agent] of officeState.agents) {
+      if (agent.source === "hermes" && removedSessions.has(agent.sessionId)) {
+        removedAgents.add(id);
+        officeState.agents.delete(id);
+        officeState.aliases.delete(id);
+      }
+    }
+    for (const id of removedSessions) officeState.sessions.delete(id);
+    for (const [from, interaction] of officeState.interactions) {
+      if (removedAgents.has(from) || removedAgents.has(interaction.with)) {
+        officeState.interactions.delete(from);
+      }
+    }
+    if (officeState.activeSessionId && removedSessions.has(officeState.activeSessionId)) {
+      officeState.activeSessionId = null;
+    }
+    return;
+  }
   if (type === "session.deleted") {
     const props = event?.properties || {};
     const sessionId = safeString(props.sessionID ?? "", "");
@@ -495,6 +529,10 @@ const getAlias = (agentId: string, preferredName: string) => {
 
 const mapStatusFromEvent = (event: EventPayload) => {
   const type = getEventType(event);
+  if (event.source === "hermes") {
+    if (type === "permission.asked") return "waiting";
+    if (type === "permission.replied") return "thinking";
+  }
   const status = safeString(event?.properties?.status ?? "", "").toLowerCase();
 
   if (status) {
@@ -537,6 +575,7 @@ const extractSessionInfo = (event: EventPayload) => {
   const info = props.info || {};
   const eventType = getEventType(event);
   if (
+    event.source !== "hermes" &&
     eventType !== "session.updated" &&
     eventType !== "session.created" &&
     eventType !== "session.compacted"
@@ -631,6 +670,9 @@ const isBackgroundSession = (title: string) =>
 const pruneAgents = () => {
   const now = Date.now();
   for (const [key, agent] of officeState.agents.entries()) {
+    if (agent.source === "hermes" && (agent.status === "waiting" || agent.status === "error")) {
+      continue;
+    }
     const lastActivity = agent.lastActivityAt || agent.lastMessageAt || 0;
     if (!agent.isBackground && agent.status !== "idle" && lastActivity) {
       if (now - lastActivity > IDLE_TTL_MS) {
@@ -698,7 +740,7 @@ const upsertAgentFromEvent = (event: EventPayload) => {
   if (cleanedIds.length === 0) {
     return null;
   }
-  if (isSessionOnlyOrPartEvent(event)) {
+  if (isSessionOnlyOrPartEvent(event) && event.source !== "hermes") {
     const hasAgentMatch = cleanedIds.some((id) => officeState.agents.has(id));
     if (!hasAgentMatch) {
       return null;
@@ -729,7 +771,7 @@ const upsertAgentFromEvent = (event: EventPayload) => {
 
   cleanedIds.forEach((agentId) => {
     const existing = officeState.agents.get(agentId);
-    const name = isSessionOnlyOrPartEvent(event)
+    const name = isSessionOnlyOrPartEvent(event) && event.source !== "hermes"
       ? existing?.name || agentId
       : extractAgentName(event, agentId);
     const alias = getAlias(agentId, name);
@@ -741,9 +783,11 @@ const upsertAgentFromEvent = (event: EventPayload) => {
     const nextProvider = provider || existing?.provider || "";
     const nextSessionId = rawSessionId || existing?.sessionId || "";
     const nextSessionTitle = sessionTitle || existing?.sessionTitle || "";
-    const nextIsBackground = isBackgroundSession(nextSessionTitle);
+    const nextIsBackground = event.source === "hermes" ? false : isBackgroundSession(nextSessionTitle);
 
-    const nextMessageSnippet = isUserMessage
+    const nextMessageSnippet = event.source === "hermes"
+      ? safeString(props.preview, "") || existing?.lastMessageSnippet || ""
+      : isUserMessage
       ? existing?.lastMessageSnippet || ""
       : isPartUpdate && !partText && !partContent && partDelta
         ? `${existing?.lastMessageSnippet || ""}${partDelta}`
@@ -752,10 +796,18 @@ const upsertAgentFromEvent = (event: EventPayload) => {
       nextMessageSnippet.length > 400
         ? nextMessageSnippet.slice(-400)
         : nextMessageSnippet;
-    const hasMessageUpdate = !isUserMessage && Boolean(messageSnippet);
+    const hasMessageUpdate = !isUserMessage && Boolean(
+      eventSource === "hermes" ? safeString(props.preview, "") : messageSnippet
+    );
     const now = Date.now();
     const isFileEditEvent = eventType === "file.edited" || eventType === "file.watcher.updated";
     const isActivityEvent =
+      (eventSource === "hermes" && (
+        eventType === "session.created" ||
+        eventType === "tool.execute.after" ||
+        eventType === "permission.asked" ||
+        eventType === "permission.replied"
+      )) ||
       eventType === "tool.execute.before" ||
       isFileEditEvent ||
       isPartUpdate ||
@@ -770,7 +822,7 @@ const upsertAgentFromEvent = (event: EventPayload) => {
       ? now
       : existing?.lastActivityAt || 0;
     const nextStatus =
-      existing?.status === "idle" && !isActivityEvent && status !== "error"
+      event.source !== "hermes" && existing?.status === "idle" && !isActivityEvent && status !== "error"
         ? "idle"
         : status;
 
@@ -786,6 +838,10 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         isBackground: nextIsBackground,
         status: nextStatus,
         source: existing.source || eventSource,
+        ...(eventSource === "hermes" ? {
+          parentSessionId: props.parentSessionId || existing.parentSessionId || "",
+          role: props.info?.role || existing.role || "",
+        } : {}),
         lastEventType: event?.type || existing.lastEventType,
         lastMessageSnippet: trimmedSnippet,
         lastMessageAt: nextMessageAt,
@@ -810,6 +866,10 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         isBackground: nextIsBackground,
         status,
         source: eventSource,
+        ...(eventSource === "hermes" ? {
+          parentSessionId: props.parentSessionId || "",
+          role: props.info?.role || "",
+        } : {}),
         lastEventType: event?.type || "unknown",
         lastMessageSnippet: trimmedSnippet,
         lastMessageAt: hasMessageUpdate ? Date.now() : 0,
@@ -875,7 +935,28 @@ const broadcast = (payload: unknown) => {
 };
 
 app.post("/events", (req: any, res: any) => {
-  const event = req.body as EventPayload;
+  let event = req.body as EventPayload;
+  if (event?.source === "hermes") {
+    const props = event.properties || {};
+    const info = props.info || {};
+    const rawId = safeString(props.sessionID ?? info.sessionID ?? info.id, "");
+    if (!rawId) {
+      res.status(400).json({ error: "Hermes events require a session identifier" });
+      return;
+    }
+    const namespace = (id: string) => `hermes:${encodeURIComponent(id)}`;
+    const sessionId = namespace(rawId);
+    const parent = safeString(props.parentSessionId ?? info.parentSessionId, "");
+    event = {
+      ...event,
+      properties: {
+        ...props,
+        sessionID: sessionId,
+        info: { ...info, id: sessionId, sessionID: sessionId },
+        ...(parent ? { parentSessionId: namespace(parent) } : {}),
+      },
+    };
+  }
   const eventType = getEventType(event) || "unknown";
   // console.log(`[PixelOffice] Event received: ${eventType}`);
   if (!officeState.loggedEventTypes.has(eventType)) {
@@ -939,11 +1020,12 @@ app.post("/events", (req: any, res: any) => {
   updateSessionStatus(event);
 
   applySessionLifecycle(event);
-  const agentId = upsertAgentFromEvent(event);
+  const agentId = event.source === "hermes" && eventType === "session.deleted"
+    ? null : upsertAgentFromEvent(event);
   updateBossMessage(event);
   const parentId = extractParentId(event);
   if (agentId && parentId) {
-    setInteraction(parentId, agentId);
+    setInteraction(event.source === "hermes" ? `${parentId}:agent` : parentId, agentId);
   }
 
   broadcast({ type: "event", event });
@@ -974,8 +1056,10 @@ const getLocalIp = () => {
 
 server.listen(PORT, "0.0.0.0", () => {
   const ip = getLocalIp();
+  const address = server.address();
+  const port = address && typeof address !== "string" ? address.port : PORT;
   officeState.networkIp = ip;
   console.log(`Pixel Office Server Running:`);
-  console.log(`  Local:   http://localhost:${PORT}`);
-  console.log(`  Network: http://${ip}:${PORT}`);
+  console.log(`  Local:   http://localhost:${port}`);
+  console.log(`  Network: http://${ip}:${port}`);
 });

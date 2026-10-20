@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
+export type OfficeSource = "opencode" | "claude" | "hermes";
+
 type Agent = {
   id: string;
   name?: string;
@@ -7,7 +9,7 @@ type Agent = {
   model?: string;
   provider?: string;
   status?: string;
-  source?: "opencode" | "claude";
+  source?: OfficeSource;
   lastMessageSnippet?: string;
   lastMessageAt?: number;
   lastStreamingAt?: number;
