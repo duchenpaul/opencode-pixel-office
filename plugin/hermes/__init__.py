@@ -60,6 +60,13 @@ def _drain() -> None:
             _events.task_done()
 
 
+def _enqueue(event: dict[str, Any]) -> None:
+    try:
+        _events.put_nowait(event)
+    except queue.Full:
+        logger.warning("Pixel Office event queue full; dropped %s", event["type"])
+
+
 def _publish(kind: str, sid: str, **properties: Any) -> None:
     if not sid:
         logger.warning("Pixel Office skipped %s: missing session identifier", kind)
@@ -70,10 +77,7 @@ def _publish(kind: str, sid: str, **properties: Any) -> None:
         "type": kind,
         "properties": {"info": info, "sessionID": sid, **properties},
     }
-    try:
-        _events.put_nowait(event)
-    except queue.Full:
-        logger.warning("Pixel Office event queue full; dropped %s for %s", kind, sid)
+    _enqueue(event)
 
 
 def _profile_name() -> str:
@@ -83,6 +87,22 @@ def _profile_name() -> str:
     except ImportError as exc:
         logger.warning("Pixel Office could not resolve the Hermes profile: %s", exc)
         return ""
+
+
+def _publish_profiles() -> None:
+    try:
+        from hermes_cli.profiles import list_profiles
+        names = {profile.name for profile in list_profiles()}
+        current = _profile_name()
+        if current:
+            names.add(current)
+        _enqueue({
+            "source": "hermes",
+            "type": "hermes.profiles",
+            "properties": {"profiles": sorted(names)},
+        })
+    except (ImportError, OSError, ValueError) as exc:
+        logger.warning("Pixel Office could not discover Hermes profiles: %s", exc)
 
 
 def _remember(sid: str, kw: dict[str, Any]) -> None:
@@ -194,14 +214,19 @@ def _handle(hook: str, kw: dict[str, Any]) -> None:
         logger.warning("Pixel Office skipped %s: missing session identifier", hook)
         return
     _remember(sid, kw)
-    if hook == "on_session_start":
+    if hook in ("on_session_start", "on_session_reset"):
         _publish("session.created", sid)
     elif hook in ("pre_llm_call", "pre_api_request", "post_llm_call"):
         _publish("session.idle" if hook == "post_llm_call" else "session.updated",
                  sid, status="idle" if hook == "post_llm_call" else "thinking")
         # Hermes handles todo inside the agent loop, bypassing post_tool_call.
         _sync_history_todos(sid, kw.get("conversation_history"))
-    elif hook in ("on_session_end", "subagent_stop"):
+    elif hook == "on_session_end":
+        _publish("session.idle", sid)
+        for key in list(_tools):
+            if key[1] == sid:
+                del _tools[key]
+    elif hook in ("on_session_finalize", "subagent_stop"):
         _publish("session.deleted", sid)
         _forget(sid)
     elif hook == "subagent_start":
@@ -276,8 +301,10 @@ def register(ctx: Any) -> None:
         _worker = threading.Thread(target=_drain, name="pixel-office", daemon=True)
         _worker.start()
         atexit.register(_flush)
-    for hook in ("on_session_start", "on_session_end", "pre_tool_call", "post_tool_call",
+    for hook in ("on_session_start", "on_session_end", "on_session_finalize", "on_session_reset",
+                 "pre_tool_call", "post_tool_call",
                  "subagent_start", "subagent_stop", "pre_approval_request",
                  "post_approval_response", "pre_llm_call", "pre_api_request", "post_llm_call"):
         ctx.register_hook(hook, _observer(hook))
+    _publish_profiles()
     logger.info("Pixel Office observers registered: %s", _endpoint)

@@ -20,9 +20,6 @@ const CLAUDE_HOOK_DIR = path.join(CLAUDE_DIR, "hooks");
 const CLAUDE_HOOK_FILE = path.join(CLAUDE_HOOK_DIR, "opencode-pixel-office-hook.js");
 const CLAUDE_SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json");
 const HERMES_PLUGIN_ID = "opencode-pixel-office";
-const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), ".hermes");
-const HERMES_PLUGIN_DIR = path.join(HERMES_HOME, "plugins", HERMES_PLUGIN_ID);
-const HERMES_MARKER = path.join(HERMES_PLUGIN_DIR, ".pixel-office-owned.json");
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -35,6 +32,21 @@ const shouldVersion = args.includes("--version") || args.includes("-v");
 const yesFlag = args.includes("--yes") || args.includes("-y");
 const portIndex = args.findIndex((arg) => arg === "--port");
 const portArg = portIndex !== -1 ? args[portIndex + 1] : null;
+const profileIndex = args.indexOf("--hermes-profile");
+const profileArg = profileIndex !== -1 ? args[profileIndex + 1] : null;
+const nativeHermesHome = path.join(os.homedir(), ".hermes");
+const hermesHome = path.resolve(process.env.HERMES_HOME || nativeHermesHome);
+const relativeHome = path.relative(nativeHermesHome, hermesHome);
+const hermesRoot = relativeHome === "" || (!relativeHome.startsWith(`..${path.sep}`) && relativeHome !== ".." && !path.isAbsolute(relativeHome))
+  ? nativeHermesHome
+  : path.basename(path.dirname(hermesHome)) === "profiles"
+    ? path.dirname(path.dirname(hermesHome))
+    : hermesHome;
+const HERMES_HOME = profileArg
+  ? profileArg === "default" ? hermesRoot : path.join(hermesRoot, "profiles", profileArg)
+  : hermesHome;
+const HERMES_PLUGIN_DIR = path.join(HERMES_HOME, "plugins", HERMES_PLUGIN_ID);
+const HERMES_MARKER = path.join(HERMES_PLUGIN_DIR, ".pixel-office-owned.json");
 const parsePort = (value) => {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -65,6 +77,7 @@ const printHelp = () => {
   console.log("  opencode-pixel-office uninstall            Uninstall completely");
   console.log("\nOptions:");
   console.log("  --port <number> Set server port (default: 5100)");
+  console.log("  --hermes-profile <name> Select an existing Hermes profile for install/status/uninstall");
   console.log("  --yes, -y       Skip confirmation prompts");
   console.log("  --version, -v   Show version number");
   console.log("\nExamples:");
@@ -169,8 +182,10 @@ const hermesInstallation = () => {
 };
 
 const toggleHermesPlugin = (action) => {
+  const profileArgs = profileArg ? ["--profile", profileArg] : [];
+  const manualCommand = `hermes ${profileArgs.length ? `--profile ${profileArg} ` : ""}plugins ${action} ${HERMES_PLUGIN_ID}`;
   try {
-    execFileSync("hermes", ["plugins", action, HERMES_PLUGIN_ID], {
+    execFileSync("hermes", [...profileArgs, "plugins", action, HERMES_PLUGIN_ID], {
       stdio: "pipe",
       env: { ...process.env, HERMES_HOME },
       timeout: 30000,
@@ -178,11 +193,11 @@ const toggleHermesPlugin = (action) => {
     return true;
   } catch (error) {
     if (error.code === "ENOENT") {
-      console.warn(`  ! Hermes CLI not found. Run 'hermes plugins ${action} ${HERMES_PLUGIN_ID}' with HERMES_HOME=${HERMES_HOME}`);
+      console.warn(`  ! Hermes CLI not found. Run '${manualCommand}' with HERMES_HOME=${HERMES_HOME}`);
       return false;
     }
     const detail = error.stderr?.toString().trim() || error.message;
-    throw new Error(`Hermes plugin ${action} failed: ${detail}. Retry 'hermes plugins ${action} ${HERMES_PLUGIN_ID}'.`);
+    throw new Error(`Hermes plugin ${action} failed: ${detail}. Retry '${manualCommand}'.`);
   }
 };
 
@@ -199,6 +214,7 @@ const installHermesPlugin = () => {
   const enabled = toggleHermesPlugin("enable");
   fs.writeFileSync(HERMES_MARKER, JSON.stringify({ owner: HERMES_PLUGIN_ID, enabled }));
   console.log(`  ✓ Hermes plugin files installed${enabled ? " and enabled" : " (enablement pending)"}`);
+  console.log(`  Hermes home: ${HERMES_HOME}`);
   console.log("  Start a new Hermes session to load the plugin.");
   return enabled;
 };
@@ -378,6 +394,9 @@ const installApp = async (port) => {
   if (port) {
     configData.port = port;
   }
+  if (profileArg) {
+    configData.hermesProfile = profileArg;
+  }
   saveConfig(configData);
 
   // npm install
@@ -398,6 +417,17 @@ const run = async () => {
     console.log(`opencode-pixel-office v${getVersion()}`);
     process.exit(0);
   }
+  if (profileIndex !== -1) {
+    if (!profileArg || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(profileArg)) {
+      throw new Error("--hermes-profile must name an existing Hermes profile (for example, dev-team)");
+    }
+    if (!shouldInstall && !shouldStatus && !shouldUninstall) {
+      throw new Error("--hermes-profile is supported by install, status, and uninstall");
+    }
+    if (!fs.existsSync(HERMES_HOME) || !fs.statSync(HERMES_HOME).isDirectory()) {
+      throw new Error(`Hermes profile '${profileArg}' not found at ${HERMES_HOME}. Create it with 'hermes profile create ${profileArg}' first.`);
+    }
+  }
 
   // STATUS
   if (shouldStatus) {
@@ -410,6 +440,7 @@ const run = async () => {
     console.log(`  Hermes plugin:     ${hermes && hermesFiles
       ? `✓ Installed (${hermes.enabled ? "enabled at last install" : "enablement pending"})`
       : "✗ Not installed or incomplete"}`);
+    console.log(`  Hermes home:       ${HERMES_HOME}`);
     console.log(`  App/Server:        ${isAppInstalled() ? "✓ Installed" : "✗ Not installed"}`);
 
     const config = loadConfig();

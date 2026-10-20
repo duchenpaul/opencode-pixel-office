@@ -66,6 +66,8 @@ opencode-pixel-office --version    # Show version
 ### Options
 
 - `--port <number>` - Custom port (default: 5100)
+- `--hermes-profile <name>` - Existing Hermes profile for `install`, `status`,
+  and `uninstall`; installation also saves the dashboard's initial profile.
 
 ## Using with OpenCode
 
@@ -87,13 +89,37 @@ requests/responses are observed without blocking agent execution. Delivery is
 best-effort with a bounded background queue; failures are logged. Events are not
 saved for later replay.
 
+For the existing `dev-team` profile:
+
+```bash
+opencode-pixel-office install --hermes-profile dev-team
+opencode-pixel-office stop
+opencode-pixel-office start
+hermes --profile dev-team
+```
+
+The plugin is installed inside that profile's home, not just the default home.
+Repeat for other profiles you want to observe. The Hermes dropdown initially
+selects `dev-team` unless a different installation profile was saved. It lists
+profiles reported by Hermes at plugin load and profiles seen in events, and
+filters their sessions, agents, quests, and Hermes approval alerts. Switching
+it never changes Hermes's default or running processes. Profiles without
+events show an empty view. Unprofiled events are kept separate.
+
+**Assigned Session** displays the full session ID and, when the profile is
+known, a selectable terminal command to resume it in that profile. Status stays
+authoritative during long requests; turn completion/interruption becomes idle,
+while finalization removes the session from the dashboard.
+
 Set `HERMES_HOME` consistently for installation, status, uninstall, and Hermes
 itself when using a custom profile. Set `PIXEL_OFFICE_URL` in the Hermes process
 environment to override the server endpoint. Otherwise the plugin reads the
 saved app port (`install --port` or `start --port`) when it loads, defaulting to
 5100. Restart Hermes after changing that port.
 
-The plugin does not import prompt streams, todos, or historical sessions.
+The plugin does not import prompt streams or historical sessions. Quests
+synchronize from successful todo results and the latest todo result in the
+running conversation history.
 Its lifecycle-hook contract follows
 [Hermes Pixel Office](https://github.com/teknium1/hermes-pixel-office), but uses
 this dashboard's existing server, not the reference server on port 8113.
@@ -154,7 +180,7 @@ npm run dev:client     # Client (separate terminal)
 npm run build:client
 
 # Focused integration tests
-node --test tests/*.test.js
+TSX_TSCONFIG_PATH="$PWD/client/tsconfig.json" node --import tsx --test tests/*.test.js
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 

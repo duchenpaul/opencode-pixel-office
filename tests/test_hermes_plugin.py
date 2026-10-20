@@ -34,7 +34,7 @@ class HermesPluginTests(unittest.TestCase):
                 patch.object(self.plugin.atexit, "register"), \
                 patch.object(self.plugin, "_resolve_endpoint", return_value="http://localhost/events"):
             self.plugin.register(ctx)
-        self.assertEqual(ctx.register_hook.call_count, 11)
+        self.assertEqual(ctx.register_hook.call_count, 13)
         for call in ctx.register_hook.call_args_list:
             self.assertIsNone(call.args[1](unexpected_future_field=True))
 
@@ -53,7 +53,7 @@ class HermesPluginTests(unittest.TestCase):
         self.assertEqual(self.event()["type"], "permission.replied")
         self.hook("post_tool_call", session_id="one", tool_name="terminal", status="ok")
         self.assertEqual(self.event()["properties"]["status"], "thinking")
-        self.hook("on_session_end", session_id="one")
+        self.hook("on_session_finalize", session_id="one")
         self.assertEqual(self.event()["type"], "session.deleted")
         self.assertFalse(self.plugin._sessions)
         self.assertFalse(self.plugin._tools)
@@ -84,6 +84,42 @@ class HermesPluginTests(unittest.TestCase):
         profiles.get_active_profile_name.return_value = "dev-team"
         with patch.dict("sys.modules", {"hermes_cli.profiles": profiles}):
             self.assertEqual(self.plugin._profile_name(), "dev-team")
+
+    def test_discovery_sends_only_profile_names_without_session_or_secrets(self):
+        profiles = Mock()
+        profiles.list_profiles.return_value = [
+            Mock(name="unused"), Mock(name="unused"),
+        ]
+        profiles.list_profiles.return_value[0].name = "dev-team"
+        profiles.list_profiles.return_value[1].name = "research"
+        profiles.list_profiles.return_value[0].api_key = "must-not-be-forwarded"
+        with patch.dict("sys.modules", {"hermes_cli.profiles": profiles}), \
+                patch.object(self.plugin.threading, "Thread"), \
+                patch.object(self.plugin.atexit, "register"), \
+                patch.object(self.plugin, "_resolve_endpoint", return_value="http://localhost/events"):
+            self.plugin.register(Mock())
+        event = self.event()
+        self.assertEqual(event["type"], "hermes.profiles")
+        self.assertEqual(event["properties"]["profiles"], ["dev-team", "research"])
+        self.assertNotIn("sessionID", event["properties"])
+        self.assertNotIn("must-not-be-forwarded", json.dumps(event))
+
+    def test_turn_end_is_idle_and_only_finalization_removes_the_session(self):
+        self.hook("pre_llm_call", session_id="one")
+        self.event()
+        self.hook("pre_tool_call", session_id="one", tool_name="terminal")
+        self.event()
+        self.hook("on_session_end", session_id="one", completed=False, interrupted=True)
+        self.assertEqual(self.event()["type"], "session.idle")
+        self.assertIn("one", self.plugin._sessions)
+        self.assertFalse(self.plugin._tools)
+        self.hook("pre_api_request", session_id="one", provider="nous")
+        self.assertEqual(self.event()["properties"]["info"]["profile"], "dev-team")
+        self.hook("on_session_finalize", session_id="one")
+        self.assertEqual(self.event()["type"], "session.deleted")
+        self.assertFalse(self.plugin._sessions)
+        self.hook("on_session_reset", session_id="two")
+        self.assertEqual(self.event()["type"], "session.created")
 
     def test_todos_follow_authoritative_results_not_partial_merge_arguments(self):
         items = [{"id": "1", "content": "Investigate", "status": "completed"},
@@ -129,7 +165,7 @@ class HermesPluginTests(unittest.TestCase):
         self.hook("pre_llm_call", session_id="one", conversation_history=history)
         self.assertEqual(self.event()["type"], "session.updated")
         self.assertEqual(self.event()["properties"]["todos"], [])
-        self.hook("on_session_end", session_id="one")
+        self.hook("on_session_finalize", session_id="one")
         self.event()
         self.assertFalse(self.plugin._todo_snapshots)
 
@@ -152,7 +188,7 @@ class HermesPluginTests(unittest.TestCase):
         self.assertNotIn("child", self.plugin._sessions)
         self.hook("subagent_start", child_session_id="second", parent_session_id="parent")
         self.event()
-        self.hook("on_session_end", session_id="parent")
+        self.hook("on_session_finalize", session_id="parent")
         self.event()
         self.assertFalse(self.plugin._sessions)
 

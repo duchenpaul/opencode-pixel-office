@@ -1,5 +1,5 @@
 import type { Agent, SessionInfo } from "../useOfficeState";
-import { formatSessionName, getSessionContext, getSessionDisplayId } from "../lib/session";
+import { getHermesResumeCommand, getSessionContext, getSessionDisplayId } from "../lib/session";
 import { ACTIVITY_LABELS, getAgentActivity, isAwaitingApproval } from "../lib/activity";
 
 type AgentPanelProps = {
@@ -74,11 +74,19 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
             <div className="border-t border-slate-700 pt-2">
               <span className="stat-label mb-1">Assigned Session</span>
               <div
-                className="text-[9px] font-mono text-emerald-900 bg-emerald-50 p-1.5 rounded border border-emerald-600 truncate"
+                className="text-[9px] font-mono text-emerald-900 bg-emerald-50 p-1.5 rounded border border-emerald-600 break-all select-all"
                 title={getSessionDisplayId(selectedAgent.sessionId)}
               >
-                {formatSessionName(agentSession || { id: selectedAgent.sessionId })}
+                {getSessionDisplayId(selectedAgent.sessionId)}
               </div>
+              {selectedAgent.source === "hermes" && selectedAgent.profile && (
+                <div className="mt-2">
+                  <span className="stat-label mb-1">Resume in Hermes</span>
+                  <code className="block text-[9px] text-secondary-foreground break-all select-all">
+                    {getHermesResumeCommand(selectedAgent.sessionId, selectedAgent.profile)}
+                  </code>
+                </div>
+              )}
             </div>
           )}
 

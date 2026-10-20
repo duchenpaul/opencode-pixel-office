@@ -184,6 +184,47 @@ test("Hermes home defaults to the current user's .hermes directory", (t) => {
   assert.equal(fs.existsSync(path.join(f.home, ".hermes/plugins/opencode-pixel-office/plugin.yaml")), true);
 });
 
+test("a named Hermes profile installs into its existing home and sets the dashboard default", (t) => {
+  const f = fixture(t);
+  const profileHome = path.join(f.env.HERMES_HOME, "profiles", "dev-team");
+  fs.mkdirSync(profileHome, { recursive: true });
+  const result = f.run("install", "--hermes-profile", "dev-team");
+  assert.equal(result.status, 0, result.stderr);
+  const plugin = path.join(profileHome, "plugins/opencode-pixel-office");
+  assert.equal(fs.existsSync(path.join(plugin, "__init__.py")), true);
+  assert.equal(fs.existsSync(f.plugin), false);
+  const config = JSON.parse(fs.readFileSync(path.join(f.home, ".opencode/pixel-office/config.json")));
+  assert.equal(config.hermesProfile, "dev-team");
+  assert.match(f.run("status", "--hermes-profile", "dev-team").stdout, /enabled at last install/);
+  assert.equal(f.run("uninstall", "--hermes-profile", "dev-team").status, 0);
+  assert.equal(fs.existsSync(plugin), false);
+  assert.deepEqual(f.calls(), [
+    ["--profile", "dev-team", "plugins", "enable", "opencode-pixel-office"],
+    ["--profile", "dev-team", "plugins", "disable", "opencode-pixel-office"],
+  ]);
+});
+
+test("profile selection resolves siblings from an existing profile home", (t) => {
+  const f = fixture(t);
+  const root = f.env.HERMES_HOME;
+  f.env.HERMES_HOME = path.join(root, "profiles", "other");
+  const profileHome = path.join(root, "profiles", "dev-team");
+  fs.mkdirSync(profileHome, { recursive: true });
+  assert.equal(f.run("install", "--hermes-profile", "dev-team").status, 0);
+  assert.equal(fs.existsSync(path.join(profileHome, "plugins/opencode-pixel-office/plugin.yaml")), true);
+});
+
+test("invalid, missing, and nonexistent Hermes profiles fail before installing anything", (t) => {
+  const f = fixture(t);
+  for (const args of [[], ["../outside"], ["--yes"], ["absent"]]) {
+    const result = f.run("install", "--hermes-profile", ...args);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /Hermes profile|--hermes-profile/);
+    assert.equal(fs.existsSync(path.join(f.home, ".opencode/plugins/pixel-office.js")), false);
+    assert.equal(fs.existsSync(f.plugin), false);
+  }
+});
+
 test("install copies the bundle without a runtime prepare hook and propagates dependency failures", (t) => {
   const f = fixture(t);
   let result = f.run("install");

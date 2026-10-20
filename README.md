@@ -128,6 +128,8 @@ or you can select its tab manually.
 - **Session labels**: Labels show the assigned English name and available
   context, such as the repository. The actual session ID remains available in
   tooltips and **Session Intel**, without the internal `hermes:` namespace.
+  **Assigned Session** shows the full, selectable ID and a profile-specific
+  `hermes --profile <name> --resume <session-id>` command to run in your terminal.
   Select a session in the **Mission Log** or select its agent to view its quests.
 - **Quest Log**: Quests are scoped to the selected session. Switching provider
   tabs does not mix sessions or quests, and completed or cancelled quests remain
@@ -136,14 +138,44 @@ or you can select its tab manually.
 Quests synchronize from successful `todo` results and the latest todo result in
 Hermes's conversation history (the built-in todo tool can bypass tool-completion
 hooks). Partial merge arguments are never treated as a complete task list.
-Prompt streaming and historical sessions are not imported.
+Hermes status is driven by its hooks, not the generic idle timeout. A completed
+or interrupted turn becomes idle; only session finalization or subagent exit
+removes the corresponding agent. Prompt streaming and historical sessions are
+not imported.
 Events use a bounded, best-effort background queue so an unavailable dashboard
 does not block Hermes. Delivery failures are logged, not replayed.
 
 ### Profiles and connection settings
 
 By default, the plugin is installed in
-`~/.hermes/plugins/opencode-pixel-office/`. For a custom profile, set
+`~/.hermes/plugins/opencode-pixel-office/`. To observe an existing named profile
+and make it the dashboard's initial selection:
+
+```bash
+opencode-pixel-office install --hermes-profile dev-team
+opencode-pixel-office stop
+opencode-pixel-office start
+hermes --profile dev-team
+```
+
+This installs into `~/.hermes/profiles/dev-team/plugins/opencode-pixel-office/`
+(or the equivalent beneath a custom `HERMES_HOME` root). The profile must
+already exist; setup does not create it or change Hermes's sticky default.
+Use the same `--hermes-profile <name>` with `status` and `uninstall`.
+
+The **Hermes profile** dropdown filters agents, sessions, quests, and Hermes
+approval alerts. It defaults to `dev-team`, or the last profile explicitly
+selected during installation. Each plugin reports the profile names returned
+by Hermes's profile API when it loads, including inactive profiles. Profiles
+seen in incoming events also appear. Restart Hermes after adding a profile to
+refresh discovery. Switching the dropdown changes only the dashboard; it does
+not start Hermes, change its default, or install a plugin in another profile.
+The **All profiles** option shows every observed Hermes session. Events without
+profile metadata appear under **Unspecified profile**, never as `dev-team`.
+An empty view means no live events have arrived for that profile, not that its
+sessions are idle.
+
+For an arbitrary custom home, set
 `HERMES_HOME` to that profile's Hermes home before installation and keep the same
 environment when launching Hermes:
 
@@ -155,7 +187,9 @@ hermes
 ```
 
 Repeat installation for each Hermes home you want to observe; all can send
-events to the same Pixel Office server.
+events to the same Pixel Office server. Sessions with the same ID in different
+profiles are tracked separately. Profile metadata always comes from the
+running Hermes session, not from the dashboard selection.
 
 The plugin reads the port saved by `install --port <number>` or
 `start --port <number>` when a new Hermes process loads it (default: 5100).

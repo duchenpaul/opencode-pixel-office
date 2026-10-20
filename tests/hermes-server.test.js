@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import WebSocket from "ws";
@@ -10,10 +13,14 @@ const SESSION_NAMES = [
   "Ben", "Emma", "Lucy", "Lily", "Alice", "Grace", "Ruby",
 ];
 
-const startServer = async (t) => {
+const startServer = async (t, config = {}) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "pixel-office-server-"));
+  const configDir = path.join(home, ".opencode/pixel-office");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify(config));
   const child = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: "0" },
+    env: { ...process.env, HOME: home, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -22,6 +29,7 @@ const startServer = async (t) => {
   t.after(async () => {
     child.kill();
     if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+    fs.rmSync(home, { recursive: true, force: true });
   });
   // The server prints the actual bound port when PORT=0.
   for (let attempt = 0; !output.match(/Local:.*:(\d+)/) && attempt < 100; attempt++) {
@@ -165,6 +173,66 @@ test("running tools and pending approvals do not expire after the idle timeout",
   }
 });
 
+test("Hermes thinking status remains authoritative beyond the generic idle timeout", async (t) => {
+  const { send, snapshot } = await startServer(t);
+  await send("session.created", "long-response");
+  await send("session.updated", "long-response", { status: "thinking" });
+  await delay(6200);
+  let state = await snapshot();
+  assert.equal(state.agents[0].status, "thinking");
+  assert.equal(state.sessions[0].status, "thinking");
+  state = await send("session.idle", "long-response");
+  assert.equal(state.agents[0].status, "idle");
+  assert.equal(state.sessions[0].status, "idle");
+});
+
+test("Hermes profile discovery and identical session IDs remain isolated by profile", async (t) => {
+  const { post, base } = await startServer(t);
+  const discovery = await post({
+    source: "hermes", type: "hermes.profiles",
+    properties: { profiles: ["default", "dev-team", "research", "dev-team"] },
+  });
+  assert.equal(discovery.hermesDefaultProfile, "dev-team");
+  assert.deepEqual(new Set(discovery.hermesProfiles), new Set(["default", "dev-team", "research"]));
+  const sendProfile = (type, profile, extra = {}) => post({
+    source: "hermes", type,
+    properties: {
+      sessionID: "same", info: { id: "same", sessionID: "same", profile },
+      ...extra,
+    },
+  });
+  await sendProfile("session.created", "dev-team");
+  let state = await sendProfile("permission.asked", "research");
+  assert.equal(state.agents.length, 2);
+  assert.equal(state.agents.find((a) => a.profile === "dev-team").status, "idle");
+  assert.equal(state.agents.find((a) => a.profile === "research").status, "waiting");
+  const ambiguous = await fetch(`${base}/events`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source: "hermes", type: "session.updated", properties: { sessionID: "same" } }),
+  });
+  assert.equal(ambiguous.status, 400);
+  state = await sendProfile("session.created", "research", { sessionID: "child", parentSessionId: "same" });
+  const parent = state.agents.find((a) => a.profile === "research" && a.sessionId.endsWith(":same"));
+  assert.equal(state.agents.find((a) => a.sessionId.endsWith(":child")).parentSessionId, parent.sessionId);
+  state = await sendProfile("session.deleted", "dev-team");
+  assert.equal(state.agents.length, 2);
+  assert.ok(state.agents.every((a) => a.profile === "research"));
+  for (const properties of [{ profiles: ["../bad"] }, { profiles: "dev-team" }]) {
+    const response = await fetch(`${base}/events`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source: "hermes", type: "hermes.profiles", properties }),
+    });
+    assert.equal(response.status, 400);
+  }
+});
+
+test("Hermes dashboard default uses the explicitly installed profile", async (t) => {
+  const { snapshot } = await startServer(t, { hermesProfile: "research" });
+  const state = await snapshot();
+  assert.equal(state.hermesDefaultProfile, "research");
+  assert.ok(state.hermesProfiles.includes("research"));
+});
+
 test("Claude hooks create independent helpers and clear approval on tool completion", async (t) => {
   const { base, snapshot } = await startServer(t);
   const hook = async (hook_event_name, extra = {}) => {
@@ -293,7 +361,8 @@ test("Hermes lifecycle is isolated, visible immediately, and cleaned up complete
 test("Hermes metadata survives sparse events and quests belong to their session", async (t) => {
   const { send } = await startServer(t);
   const sid = "session-abcdef";
-  const session = (state, id) => state.sessions.find((s) => s.id === `hermes:${id}`);
+  const session = (state, id) => state.sessions.find((s) =>
+    s.id === `hermes:dev-team:${id}` || s.id === `hermes:${id}`);
   let state = await send("session.created", sid, {
     info: {
       id: sid, sessionID: sid, agent: "dev-team", profile: "dev-team",
@@ -309,7 +378,7 @@ test("Hermes metadata survives sparse events and quests belong to their session"
   assert.equal(agent.profile, "dev-team");
   assert.equal(agent.model, "test-model");
   assert.equal(agent.provider, "openrouter");
-  assert.equal(agent.sessionId, `hermes:${sid}`);
+  assert.equal(agent.sessionId, `hermes:dev-team:${sid}`);
   assert.equal(session(state, sid).source, "hermes");
 
   state = await send("session.updated", sid, {

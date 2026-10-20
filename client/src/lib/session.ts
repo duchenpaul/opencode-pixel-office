@@ -1,7 +1,16 @@
 import type { SessionInfo } from "../useOfficeState";
 
-export const getSessionDisplayId = (id: string) =>
-  id.startsWith("hermes:") ? decodeURIComponent(id.slice("hermes:".length)) : id;
+export const getSessionDisplayId = (id: string) => {
+  if (!id.startsWith("hermes:")) return id;
+  const value = id.slice("hermes:".length);
+  return decodeURIComponent(value.slice(value.indexOf(":") + 1));
+};
+
+export const getHermesResumeCommand = (sessionId: string, profile: string) => {
+  const quote = (value: string) => /^[a-zA-Z0-9_./:-]+$/.test(value)
+    ? value : `'${value.replace(/'/g, "'\\''")}'`;
+  return `hermes --profile ${quote(profile)} --resume ${quote(getSessionDisplayId(sessionId))}`;
+};
 
 export const getSessionContext = (session: SessionInfo) =>
   session.directory?.split("/").filter(Boolean).pop()
