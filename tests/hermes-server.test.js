@@ -5,6 +5,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import WebSocket from "ws";
 
+const SESSION_NAMES = [
+  "Tom", "Jerry", "Jack", "Oliver", "Henry", "Leo", "Max", "Sam",
+  "Ben", "Emma", "Lucy", "Lily", "Alice", "Grace", "Ruby",
+];
+
 const startServer = async (t) => {
   const child = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     cwd: new URL("..", import.meta.url),
@@ -74,7 +79,10 @@ test("Hermes lifecycle is isolated, visible immediately, and cleaned up complete
     parentSessionId: "same", status: "working",
     info: { id: "child", sessionID: "child", agent: "research", role: "research" },
   });
-  assert.equal(agent(state, "child").alias, "research");
+  const childName = agent(state, "child").alias;
+  assert.ok(SESSION_NAMES.includes(childName));
+  assert.notEqual(childName, agent(state, "same").alias);
+  assert.equal(agent(state, "child").name, "research");
   assert.equal(agent(state, "child").role, "research");
   assert.ok(state.interactions.some((i) =>
     i.from === agent(state, "same").id && i.to === agent(state, "child").id));
@@ -82,6 +90,7 @@ test("Hermes lifecycle is isolated, visible immediately, and cleaned up complete
     info: { id: "child", sessionID: "child", agent: "changed role" },
   });
   assert.equal(state.agents.filter((a) => a.sessionId === "hermes:child").length, 1);
+  assert.equal(agent(state, "child").alias, childName);
   state = await send("permission.asked", "same", { preview: "Awaiting approval" });
   assert.equal(agent(state, "same").status, "waiting");
   await delay(6200);
@@ -131,7 +140,10 @@ test("Hermes metadata survives sparse events and quests belong to their session"
     },
   });
   let agent = state.agents[0];
-  assert.equal(agent.alias, "dev-team");
+  const displayName = agent.alias;
+  assert.ok(SESSION_NAMES.includes(displayName));
+  assert.equal(agent.name, "dev-team");
+  assert.equal(session(state, sid).displayName, displayName);
   assert.equal(agent.profile, "dev-team");
   assert.equal(agent.model, "test-model");
   assert.equal(agent.provider, "openrouter");
@@ -142,7 +154,8 @@ test("Hermes metadata survives sparse events and quests belong to their session"
     info: { id: sid, sessionID: sid }, status: "thinking",
   });
   agent = state.agents[0];
-  assert.equal(agent.alias, "dev-team");
+  assert.equal(agent.alias, displayName);
+  assert.equal(session(state, sid).displayName, displayName);
   assert.equal(agent.model, "test-model");
   assert.equal(agent.provider, "openrouter");
   assert.equal(session(state, sid).directory, "/work/repo");
@@ -184,4 +197,51 @@ test("Hermes metadata survives sparse events and quests belong to their session"
   state = await send("session.deleted", sid);
   assert.equal(session(state, sid), undefined);
   assert.equal(session(state, "other").todos[0].content, "Other session");
+});
+
+test("sessions use 15 unique English names, keep them on updates, and reuse released names", async (t) => {
+  const { send, snapshot } = await startServer(t);
+  const sources = ["hermes", "opencode", "claude"];
+  const assignedNames = new Map();
+  let state;
+  for (let index = 0; index < 15; index++) {
+    const source = sources[index % sources.length];
+    const sid = `named-${index}`;
+    await send("session.created", sid, {}, source);
+    state = await send("tool.execute.before", sid, {}, source);
+    const sessionId = source === "hermes" ? `hermes:${sid}` : sid;
+    const agent = state.agents.find((a) => a.sessionId === sessionId);
+    assert.ok(SESSION_NAMES.includes(agent.alias));
+    assignedNames.set(sessionId, agent.alias);
+    assert.equal(state.sessions.find((s) => s.id === sessionId).displayName, agent.alias);
+  }
+  assert.equal(new Set(assignedNames.values()).size, 15);
+  assert.deepEqual(new Set(assignedNames.values()), new Set(SESSION_NAMES));
+
+  for (let index = 0; index < sources.length; index++) {
+    const sid = `named-${index}`;
+    await send("session.updated", sid, {}, sources[index]);
+    await send("tool.execute.before", sid, {
+      info: { id: sid, sessionID: sid, agent: "renamed-profile" },
+    }, sources[index]);
+  }
+  state = await snapshot();
+  for (const [sessionId, name] of assignedNames) {
+    assert.equal(state.agents.find((a) => a.sessionId === sessionId).alias, name);
+    assert.equal(state.sessions.find((s) => s.id === sessionId).displayName, name);
+  }
+
+  state = await send("session.created", "overflow");
+  const overflow = state.agents.find((a) => a.sessionId === "hermes:overflow");
+  assert.match(overflow.alias, / 2$/);
+  assert.ok(SESSION_NAMES.includes(overflow.alias.slice(0, -2)));
+  assert.equal(new Set(state.agents.map((a) => a.alias)).size, 16);
+  assert.equal(state.sessions.find((s) => s.id === "hermes:overflow").displayName, overflow.alias);
+
+  const releasedName = assignedNames.get("hermes:named-0");
+  state = await send("session.deleted", "named-0");
+  assert.ok(!state.agents.some((a) => a.alias === releasedName));
+  state = await send("session.created", "replacement");
+  assert.equal(state.agents.find((a) => a.sessionId === "hermes:replacement").alias, releasedName);
+  assert.equal(state.agents.find((a) => a.sessionId === "hermes:overflow").alias, overflow.alias);
 });

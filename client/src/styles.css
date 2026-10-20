@@ -358,7 +358,7 @@ main {
 
 .stat-label {
   font-size: 8px;
-  color: #64748b;
+  color: hsl(var(--foreground));
   font-family: "Press Start 2P", monospace;
   display: block;
   margin-bottom: 6px;
@@ -501,4 +501,3 @@ header .logo-card {
     display: none;
   }
 }
-

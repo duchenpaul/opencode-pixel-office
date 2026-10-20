@@ -48,6 +48,7 @@ type TodoItem = {
 
 type SessionInfo = {
   id: string;
+  displayName?: string;
   source?: "opencode" | "claude" | "hermes";
   profile?: string;
   title?: string;
@@ -66,7 +67,6 @@ type OfficeState = {
   interactions: Map<string, { with: string; updatedAt: number }>;
   aliases: Map<string, string>;
   nextDeskIndex: number;
-  nextAliasIndex: number;
   activeSessionId: string | null;
   lastActiveAt: number;
   loggedEventTypes: Set<string>;
@@ -90,7 +90,6 @@ const officeState: OfficeState = {
   interactions: new Map(),
   aliases: new Map(),
   nextDeskIndex: 0,
-  nextAliasIndex: 1,
   activeSessionId: null,
   lastActiveAt: 0,
   loggedEventTypes: new Set(),
@@ -106,6 +105,10 @@ const officeState: OfficeState = {
 const MAX_DESKS = 15;
 const DESK_COLUMNS = 5;
 const IDLE_TTL_MS = 6000;
+const SESSION_NAMES = [
+  "Tom", "Jerry", "Jack", "Oliver", "Henry", "Leo", "Max", "Sam",
+  "Ben", "Emma", "Lucy", "Lily", "Alice", "Grace", "Ruby",
+];
 
 const KNOWN_EVENTS = new Set([
   "command.executed",
@@ -527,15 +530,29 @@ const applySessionLifecycle = (event: EventPayload) => {
   }
 };
 
-const getAlias = (agentId: string, preferredName: string) => {
-  if (preferredName && preferredName !== agentId) {
-    officeState.aliases.set(agentId, preferredName);
+const getAlias = (agentId: string, sessionId: string) => {
+  const session = officeState.sessions.get(sessionId);
+  let alias = session?.displayName || officeState.aliases.get(agentId);
+  if (!alias) {
+    const usedNames = new Set(officeState.aliases.values());
+    for (const activeSession of officeState.sessions.values()) {
+      if (activeSession.displayName) usedNames.add(activeSession.displayName);
+    }
+    let suffix = 1;
+    let availableNames: string[];
+    do {
+      availableNames = SESSION_NAMES
+        .map((name) => suffix === 1 ? name : `${name} ${suffix}`)
+        .filter((name) => !usedNames.has(name));
+      suffix += 1;
+    } while (availableNames.length === 0);
+    alias = availableNames[Math.floor(Math.random() * availableNames.length)];
   }
-  if (!officeState.aliases.has(agentId)) {
-    officeState.aliases.set(agentId, `Agent ${officeState.nextAliasIndex}`);
-    officeState.nextAliasIndex += 1;
+  officeState.aliases.set(agentId, alias);
+  if (session && session.displayName !== alias) {
+    officeState.sessions.set(sessionId, { ...session, displayName: alias });
   }
-  return officeState.aliases.get(agentId);
+  return alias;
 };
 
 const mapStatusFromEvent = (event: EventPayload) => {
@@ -800,14 +817,14 @@ const upsertAgentFromEvent = (event: EventPayload) => {
       : isSessionOnlyOrPartEvent(event)
       ? existing?.name || agentId
       : extractAgentName(event, agentId);
-    const alias = getAlias(agentId, name);
+    const nextSessionId = rawSessionId || existing?.sessionId || "";
+    const alias = getAlias(agentId, nextSessionId);
     const resolvedModel = modelId || model;
     const nextModel =
       resolvedModel !== "unknown"
         ? resolvedModel
         : existing?.model || "unknown";
     const nextProvider = provider || existing?.provider || "";
-    const nextSessionId = rawSessionId || existing?.sessionId || "";
     const nextSessionTitle = sessionTitle || existing?.sessionTitle || "";
     const nextIsBackground = event.source === "hermes" ? false : isBackgroundSession(nextSessionTitle);
 

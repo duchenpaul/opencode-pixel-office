@@ -86,7 +86,7 @@ const SessionPanel = ({
             {selectedSession.status && (
               <div className="flex justify-between items-center">
                 <span className="text-[8px] text-slate-500">Status</span>
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-600 inline-block">
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground border border-border inline-block">
                   {selectedSession.status}
                 </span>
               </div>

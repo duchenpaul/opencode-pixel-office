@@ -56,6 +56,7 @@ type TodoItem = {
 
 type SessionInfo = {
   id: string;
+  displayName?: string;
   source?: OfficeSource;
   profile?: string;
   title?: string;

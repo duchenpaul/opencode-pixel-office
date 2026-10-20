@@ -12,6 +12,9 @@ export const getSessionContext = (session: SessionInfo) =>
 
 export const formatSessionName = (session: SessionInfo) => {
   const context = getSessionContext(session);
+  if (session.displayName) {
+    return context ? `${session.displayName} · ${context}` : session.displayName;
+  }
   const shortId = getSessionDisplayId(session.id).slice(0, 6);
   return context ? `${context} · ${shortId}` : shortId;
 };

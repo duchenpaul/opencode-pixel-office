@@ -49,7 +49,7 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
               <span className="stat-label">Provider</span>
               <span className="stat-value">{selectedAgent.provider || "Unknown"}</span>
             </div>
-            {selectedAgent.profile && selectedAgent.role && (
+            {selectedAgent.profile && (
               <div className="stat-box col-span-2">
                 <span className="stat-label">Profile</span>
                 <span className="stat-value">{selectedAgent.profile}</span>
@@ -61,7 +61,7 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
             <div className="border-t border-slate-700 pt-2">
               <span className="stat-label mb-1">Assigned Session</span>
               <div
-                className="text-[9px] font-mono text-emerald-400/80 bg-emerald-950/30 p-1.5 rounded border border-emerald-900/50 truncate"
+                className="text-[9px] font-mono text-emerald-900 bg-emerald-50 p-1.5 rounded border border-emerald-600 truncate"
                 title={getSessionDisplayId(selectedAgent.sessionId)}
               >
                 {formatSessionName(agentSession || { id: selectedAgent.sessionId })}
@@ -70,9 +70,9 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
           )}
 
           {selectedAgent.lastMessageSnippet && (
-            <div className="bg-slate-900/50 p-2 rounded border border-slate-700/50">
-              <span className="stat-label mb-1 text-slate-500">Last Transmission</span>
-              <p className="text-[9px] text-slate-300 italic">"{selectedAgent.lastMessageSnippet.slice(0, 100)}{selectedAgent.lastMessageSnippet.length > 100 ? '...' : ''}"</p>
+            <div className="bg-secondary text-secondary-foreground p-2 rounded border border-border">
+              <span className="stat-label mb-1">Last Transmission</span>
+              <p className="text-[9px] text-secondary-foreground italic">"{selectedAgent.lastMessageSnippet.slice(0, 100)}{selectedAgent.lastMessageSnippet.length > 100 ? '...' : ''}"</p>
             </div>
           )}
         </div>

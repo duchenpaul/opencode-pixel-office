@@ -13,6 +13,13 @@ A pixel-art office visualization for AI assistants. Works with **OpenCode**, **C
 - **Tabbed Interface**: Defaults to the OpenCode, Claude, or Hermes view with the largest badge count. Manual selections stay active until reload; ties use that tab order.
 - **Mobile Ready**: Connect via local network + QR code
 - **Session Tracking**: Monitor multiple sessions across different repos
+- **Session Names**: Each session gets a random English name, shared by its
+  character label, agent profile, and session list. Names stay stable across
+  updates and browser refreshes until the session ends or the server restarts.
+  The 15-name pool is Tom, Jerry, Jack, Oliver, Henry, Leo, Max, Sam, Ben, Emma,
+  Lucy, Lily, Alice, Grace, and Ruby. Active sessions do not share names; if all
+  15 are in use, numbered names such as `Tom 2` are assigned. Ended sessions
+  release their names for reuse.
 
 ## Quick Start
 
@@ -100,15 +107,16 @@ or you can select its tab manually.
 ### What appears in the dashboard
 
 - **Sessions and subagents**: Main sessions, delegated subagents, tool
-  activity/errors, and approval waiting states are supported. Main agents use
-  the active Hermes profile name (for example, `dev-team`); subagents keep
-  their role and profile.
+  activity/errors, and approval waiting states are supported. Characters use
+  their session's English name; the **Agent Profile** panel retains the active
+  Hermes profile (for example, `dev-team`) and any subagent role.
 - **Runtime metadata**: Model and provider come from live request hooks,
   including runtime model switches, not model-name or credential inference.
   The provider remains unknown until Hermes supplies it on a request.
-- **Session labels**: Labels show the actual session ID rather than the internal
-  `hermes:` namespace. Select a session in the **Mission Log** or select its
-  agent to view its quests.
+- **Session labels**: Labels show the assigned English name and available
+  context, such as the repository. The actual session ID remains available in
+  tooltips and **Session Intel**, without the internal `hermes:` namespace.
+  Select a session in the **Mission Log** or select its agent to view its quests.
 - **Quest Log**: Quests are scoped to the selected session. Switching provider
   tabs does not mix sessions or quests, and completed or cancelled quests remain
   visible until Hermes replaces or clears the list, or the session ends.
