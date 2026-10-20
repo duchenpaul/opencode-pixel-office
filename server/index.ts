@@ -559,7 +559,32 @@ const getAlias = (agentId: string, sessionId: string) => {
   return alias;
 };
 
+// Status state machine for Hermes events, adapted from
+// teknium1/hermes-pixel-office build_state(): the event TYPE alone decides
+// status — Hermes events never carry a display status, only facts
+// (error flag, approval choice, parent session id).
+const mapHermesStatus = (event: EventPayload) => {
+  const type = getEventType(event);
+  if (type === "permission.asked") return "waiting";
+  if (type === "permission.replied") {
+    const choice = safeString(event.properties?.choice, "").toLowerCase();
+    return choice === "allow" || choice === "approve" || choice === "approved" || choice === "yes"
+      ? "working"
+      : "thinking";
+  }
+  if (type === "tool.execute.before") return "working";
+  if (type === "tool.execute.after") {
+    return safeString(event.properties?.status, "") === "error" ? "error" : "thinking";
+  }
+  if (type === "session.created") return extractParentId(event) ? "working" : "idle";
+  if (type === "session.idle" || type === "session.deleted") return "idle";
+  if (type === "session.error") return "error";
+  if (type === "session.compacted") return "planning";
+  return "thinking"; // session.updated = LLM turn in flight
+};
+
 const mapStatusFromEvent = (event: EventPayload) => {
+  if (event.source === "hermes") return mapHermesStatus(event);
   const type = getEventType(event);
   if (type === "permission.asked") return "waiting";
   if (type === "permission.replied") return "thinking";
@@ -794,10 +819,26 @@ const updateAgentActivity = (
   };
 };
 
+const HERMES_IDLE_TTL_MS = 5 * 60 * 1000;
+
 const pruneAgents = () => {
   const now = Date.now();
   for (const [key, agent] of officeState.agents.entries()) {
-    if (agent.source === "hermes" || pendingApprovals.has(key) || activeTools.has(key)) {
+    if (agent.source === "hermes") {
+      // Reference behavior (hermes-pixel-office): an agent quiet while
+      // "working"/"thinking" for 5 min is idle; pending approvals and
+      // running tools never expire.
+      if (
+        !pendingApprovals.has(key) &&
+        !activeTools.has(key) &&
+        (agent.status === "working" || agent.status === "thinking") &&
+        now - agent.updatedAt > HERMES_IDLE_TTL_MS
+      ) {
+        officeState.agents.set(key, { ...agent, status: "idle", updatedAt: now });
+      }
+      continue;
+    }
+    if (pendingApprovals.has(key) || activeTools.has(key)) {
       continue;
     }
     const lastActivity = agent.lastActivityAt || agent.lastMessageAt || 0;
@@ -1243,6 +1284,12 @@ app.get("/health", (_req: any, res: any) => {
 wss.on("connection", (socket: any) => {
   socket.send(JSON.stringify({ type: "state", state: getStateSnapshot() }));
 });
+
+// Push a fresh snapshot periodically so time-derived changes (idle sweeps)
+// reach connected clients even when no events flow.
+setInterval(() => {
+  broadcast({ type: "state", state: getStateSnapshot() });
+}, 30_000);
 
 const getLocalIp = () => {
   const nets = os.networkInterfaces();

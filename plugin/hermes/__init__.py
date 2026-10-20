@@ -242,8 +242,7 @@ def _handle(hook: str, kw: dict[str, Any]) -> None:
     if hook in ("on_session_start", "on_session_reset"):
         _publish("session.created", sid)
     elif hook in ("pre_llm_call", "pre_api_request", "post_llm_call"):
-        _publish("session.idle" if hook == "post_llm_call" else "session.updated",
-                 sid, status="idle" if hook == "post_llm_call" else "thinking")
+        _publish("session.idle" if hook == "post_llm_call" else "session.updated", sid)
         # Hermes handles todo inside the agent loop, bypassing post_tool_call.
         _sync_history_todos(sid, kw.get("conversation_history"))
     elif hook in ("on_session_end", "on_session_finalize"):
@@ -257,7 +256,7 @@ def _handle(hook: str, kw: dict[str, Any]) -> None:
     elif hook == "subagent_start":
         parent = str(kw.get("parent_session_id") or "")
         _sessions[sid]["parentSessionId"] = parent
-        _publish("session.created", sid, parentSessionId=parent, status="working")
+        _publish("session.created", sid, parentSessionId=parent)
     elif hook == "pre_tool_call":
         name = str(kw.get("tool_name") or "")
         key = (threading.get_ident(), sid, name)
@@ -277,16 +276,17 @@ def _handle(hook: str, kw: dict[str, Any]) -> None:
             if not _tools[key]:
                 del _tools[key]
         failed = kw.get("status") in ("error", "failed", "failure") or kw.get("error_message")
+        extra = {"status": "error"} if failed else {}
         _publish("tool.execute.after", sid, tool={"name": name},
-                 status="error" if failed else "thinking",
-                 preview=str(kw.get("error_message") or "")[:200])
+                 preview=str(kw.get("error_message") or "")[:200], **extra)
         if name == "todo" and not failed:
             _sync_todos(sid, kw.get("result"))
     elif hook == "pre_approval_request":
         _publish("permission.asked", sid, preview="Awaiting approval")
     elif hook == "post_approval_response":
         choice = str(kw.get("choice") or "")
-        _publish("permission.replied", sid, preview=f"Approval response: {choice}"[:200])
+        _publish("permission.replied", sid, choice=choice,
+                 preview=f"Approval response: {choice}"[:200])
 
 
 def _observer(hook: str) -> Any:
