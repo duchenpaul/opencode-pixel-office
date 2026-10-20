@@ -99,20 +99,24 @@ hermes --profile dev-team
 ```
 
 The plugin is installed inside that profile's home, not just the default home.
-Repeat for other profiles you want to observe. The read-only **Active Hermes
-profile** label reports the running profile, not an installation setting or
-hardcoded default. Only the current profile is collected at plugin load;
-inactive profiles are not listed. If multiple profiles are running, the
-dashboard automatically follows the one most recently reporting activity,
-including its sessions, agents, quests, and Hermes approval alerts. It never
-changes Hermes's default or running processes. Before runtime events arrive,
-the label shows **Awaiting Hermes**. Unprofiled events show **Unspecified
-profile** and remain separate.
+Repeat for other profiles you want to observe. The **Hermes profile** dropdown
+lists machine profile names, including inactive profiles and the built-in
+`default`. If Hermes's profile-list API is unavailable in its isolated Python
+runtime, the plugin scans the profiles directory, preferring Hermes's root
+helper and falling back to `~/.hermes/profiles`. Profile configurations and
+credentials are not sent.
+
+The initial selection is `default`, overridable with `hermesProfile` in Pixel
+Office's saved configuration. Select a profile, **All profiles**, or
+**Unspecified profile** to filter its agents, sessions, quests, and Hermes
+approval alerts. This never changes Hermes's default or running processes.
+Session profile metadata still comes from the running Hermes process.
 
 **Assigned Session** displays the full session ID and, when the profile is
 known, a selectable terminal command to resume it in that profile. Status stays
-authoritative during long requests; turn completion/interruption becomes idle,
-while finalization removes the session from the dashboard.
+authoritative during long requests; turn completion/interruption and session
+finalization become idle without removing the agent. Subagent exit removes its
+agent, and process exit sends final deletion events for remaining sessions.
 
 Set `HERMES_HOME` consistently for installation, status, uninstall, and Hermes
 itself when using a custom profile. Set `PIXEL_OFFICE_URL` in the Hermes process

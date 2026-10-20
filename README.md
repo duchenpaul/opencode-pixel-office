@@ -139,8 +139,9 @@ Quests synchronize from successful `todo` results and the latest todo result in
 Hermes's conversation history (the built-in todo tool can bypass tool-completion
 hooks). Partial merge arguments are never treated as a complete task list.
 Hermes status is driven by its hooks, not the generic idle timeout. A completed
-or interrupted turn becomes idle; only session finalization or subagent exit
-removes the corresponding agent. Prompt streaming and historical sessions are
+or interrupted turn and session finalization become idle, keeping the agent
+at its desk with its quests. Subagent exit removes that subagent; process exit
+sends final deletion events for the process's remaining sessions. Prompt streaming and historical sessions are
 not imported.
 Events use a bounded, best-effort background queue so an unavailable dashboard
 does not block Hermes. Delivery failures are logged, not replayed.
@@ -162,16 +163,19 @@ This installs into `~/.hermes/profiles/dev-team/plugins/opencode-pixel-office/`
 already exist; setup does not create it or change Hermes's sticky default.
 Use the same `--hermes-profile <name>` with `status` and `uninstall`.
 
-The read-only **Active Hermes profile** label comes from the running Hermes
-process's profile API when the plugin loads and from subsequent session events.
-There is no hardcoded or installation-time dashboard default, and inactive
-profiles are not collected. Before Hermes reports a profile, the label shows
-**Awaiting Hermes**; events without profile metadata show **Unspecified profile**.
-If multiple Hermes profiles are running, the dashboard follows the profile
-most recently reporting runtime activity, keeping its agents, sessions, quests,
-and Hermes approval alerts together. This never changes Hermes's default or
-starts another process. An empty view means no live sessions have arrived for
-that profile, not that its sessions are idle.
+The **Hermes profile** dropdown lists machine profiles reported by the plugin,
+including inactive profiles and Hermes's built-in `default`. If Hermes's
+profile-list API cannot load in an isolated Python process, discovery scans
+profile directory names without loading their configuration. Hermes's root
+helper is preferred, with `~/.hermes/profiles` as the fallback. Only profile
+names are sent, never their credentials.
+
+The dropdown initially selects `default` (or `hermesProfile` in Pixel Office's
+saved configuration). Choose a profile, **All profiles**, or **Unspecified
+profile** for events without profile metadata. The selection filters agents,
+sessions, quests, and Hermes approval alerts; it never changes Hermes's default
+or starts another process. An empty view means no live sessions have arrived
+for that profile, not that its sessions are idle.
 
 For an arbitrary custom home, set
 `HERMES_HOME` to that profile's Hermes home before installation and keep the same

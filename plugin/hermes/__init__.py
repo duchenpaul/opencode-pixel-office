@@ -102,6 +102,34 @@ def _publish_profile() -> None:
         logger.warning("Pixel Office could not report the active Hermes profile: %s", exc)
 
 
+def _publish_profiles() -> None:
+    try:
+        try:
+            from hermes_cli.profiles import list_profiles
+            names = {profile.name for profile in list_profiles()}
+        except Exception as exc:
+            logger.debug("Pixel Office scanning Hermes profile directories after discovery failed: %s", exc)
+            try:
+                from hermes_cli.profiles import _get_profiles_root
+                root = Path(_get_profiles_root())
+            except Exception as exc:
+                logger.debug("Pixel Office using the standard Hermes profiles directory: %s", exc)
+                root = Path.home() / ".hermes" / "profiles"
+            names = {"default"}
+            if root.is_dir():
+                names.update(entry.name for entry in root.iterdir() if entry.is_dir())
+        current = _profile_name()
+        if current:
+            names.add(current)
+        _enqueue({
+            "source": "hermes",
+            "type": "hermes.profiles",
+            "properties": {"profiles": sorted(names)},
+        })
+    except (ImportError, OSError, ValueError) as exc:
+        logger.warning("Pixel Office could not discover Hermes profiles: %s", exc)
+
+
 def _remember(sid: str, kw: dict[str, Any]) -> None:
     if sid not in _sessions:
         parent = _sessions.get(str(kw.get("parent_session_id") or ""), {})
@@ -218,12 +246,12 @@ def _handle(hook: str, kw: dict[str, Any]) -> None:
                  sid, status="idle" if hook == "post_llm_call" else "thinking")
         # Hermes handles todo inside the agent loop, bypassing post_tool_call.
         _sync_history_todos(sid, kw.get("conversation_history"))
-    elif hook == "on_session_end":
+    elif hook in ("on_session_end", "on_session_finalize"):
         _publish("session.idle", sid)
         for key in list(_tools):
             if key[1] == sid:
                 del _tools[key]
-    elif hook in ("on_session_finalize", "subagent_stop"):
+    elif hook == "subagent_stop":
         _publish("session.deleted", sid)
         _forget(sid)
     elif hook == "subagent_start":
@@ -275,7 +303,13 @@ def _observer(hook: str) -> Any:
 def _flush() -> None:
     if _worker is None:
         return
-    # Give normal session-end events a chance to leave without delaying shutdown indefinitely.
+    with _lock:
+        for sid in _sessions:
+            _publish("session.deleted", sid)
+        _sessions.clear()
+        _todo_snapshots.clear()
+        _tools.clear()
+    # Give exit events a chance to leave without delaying shutdown indefinitely.
     import time
     deadline = time.monotonic() + 1.2
     while _events.unfinished_tasks and time.monotonic() < deadline:
@@ -304,4 +338,5 @@ def register(ctx: Any) -> None:
                  "post_approval_response", "pre_llm_call", "pre_api_request", "post_llm_call"):
         ctx.register_hook(hook, _observer(hook))
     _publish_profile()
+    _publish_profiles()
     logger.info("Pixel Office observers registered: %s", _endpoint)

@@ -8,7 +8,7 @@ import { useOfficeState } from "./useOfficeState";
 import type { OfficeSource } from "./useOfficeState";
 import { formatSessionName } from "./lib/session";
 import { ApprovalAlerts } from "./components/ApprovalAlerts";
-import { matchesHermesProfile } from "./lib/hermes";
+import { getHermesProfiles, matchesHermesProfile, UNPROFILED_HERMES } from "./lib/hermes";
 
 type OfficeTab = OfficeSource;
 
@@ -26,13 +26,21 @@ const App = () => {
     lastTodoSummary,
     bossMessage,
     networkIp,
-    hermesActiveProfile: activeHermesProfile,
+    hermesProfiles,
+    hermesDefaultProfile,
     setSelectedAgentId,
     setSelectedSessionId,
   } = useOfficeState();
 
   const [showQr, setShowQr] = useState(false);
   const [selectedTab, setSelectedTab] = useState<OfficeTab | null>(null);
+  const [selectedHermesProfile, setSelectedHermesProfile] = useState<string | null>(null);
+  const activeHermesProfile = selectedHermesProfile ?? hermesDefaultProfile;
+  const profileOptions = useMemo(
+    () => getHermesProfiles(hermesProfiles, activeHermesProfile === UNPROFILED_HERMES
+      ? hermesDefaultProfile : activeHermesProfile || hermesDefaultProfile, agents, sessions),
+    [hermesProfiles, hermesDefaultProfile, activeHermesProfile, agents, sessions]
+  );
   const hasUnprofiledHermes = agents.some((a) => a.source === "hermes" && !a.profile)
     || sessions.some((s) => s.source === "hermes" && !s.profile);
 
@@ -189,19 +197,29 @@ const App = () => {
             )}
           </div>
 
-          <div
+          <label
             className={`flex flex-col gap-1 text-[9px] text-secondary-foreground ${activeTab === "hermes" ? "" : "invisible"}`}
             aria-hidden={activeTab !== "hermes"}
           >
-            <span>Active Hermes profile</span>
-            <span
-              aria-label="Active Hermes profile"
-              aria-live="polite"
-              className="bg-secondary border border-border rounded p-1.5 text-secondary-foreground break-all"
+            <span>Hermes profile</span>
+            <select
+              aria-label="Hermes profile"
+              disabled={activeTab !== "hermes"}
+              className="bg-secondary border border-border rounded p-1.5 text-secondary-foreground"
+              value={activeHermesProfile}
+              onChange={(event) => {
+                setSelectedHermesProfile(event.target.value);
+                setSelectedAgentId(null);
+                setSelectedSessionId(null);
+              }}
             >
-              {activeHermesProfile || (hasUnprofiledHermes ? "Unspecified profile" : "Awaiting Hermes")}
-            </span>
-          </div>
+              <option value="">All profiles</option>
+              {profileOptions.map((profile) => <option key={profile} value={profile}>{profile}</option>)}
+              {(hasUnprofiledHermes || activeHermesProfile === UNPROFILED_HERMES) && (
+                <option value={UNPROFILED_HERMES}>Unspecified profile</option>
+              )}
+            </select>
+          </label>
         </div>
       </header>
 
@@ -210,6 +228,7 @@ const App = () => {
         onSelectAgent={(agent) => {
           setSelectedTab(agent.source || "opencode");
           setSelectedAgentId(agent.id);
+          if (agent.source === "hermes") setSelectedHermesProfile(agent.profile || UNPROFILED_HERMES);
           if (agent.sessionId) setSelectedSessionId(agent.sessionId);
         }}
       />
@@ -231,7 +250,7 @@ const App = () => {
         <aside className="sidebar-stack">
           {activeTab === "hermes" && filteredSessions.length === 0 && (
             <p role="status" className="data-panel text-[9px] text-secondary-foreground">
-              No live Hermes sessions{activeHermesProfile
+              No live Hermes sessions{activeHermesProfile && activeHermesProfile !== UNPROFILED_HERMES
                 ? ` for ${activeHermesProfile}` : ""}.
               {" "}Enable Pixel Office in that profile, restart Hermes, and send a prompt.
             </p>

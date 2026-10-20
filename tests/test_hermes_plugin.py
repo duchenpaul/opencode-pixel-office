@@ -32,6 +32,7 @@ class HermesPluginTests(unittest.TestCase):
         ctx = Mock()
         with patch.object(self.plugin.threading, "Thread"), \
                 patch.object(self.plugin.atexit, "register"), \
+                patch.object(self.plugin, "_publish_profiles"), \
                 patch.object(self.plugin, "_resolve_endpoint", return_value="http://localhost/events"):
             self.plugin.register(ctx)
         self.assertEqual(ctx.register_hook.call_count, 13)
@@ -54,8 +55,8 @@ class HermesPluginTests(unittest.TestCase):
         self.hook("post_tool_call", session_id="one", tool_name="terminal", status="ok")
         self.assertEqual(self.event()["properties"]["status"], "thinking")
         self.hook("on_session_finalize", session_id="one")
-        self.assertEqual(self.event()["type"], "session.deleted")
-        self.assertFalse(self.plugin._sessions)
+        self.assertEqual(self.event()["type"], "session.idle")
+        self.assertIn("one", self.plugin._sessions)
         self.assertFalse(self.plugin._tools)
 
     def test_runtime_metadata_uses_profile_and_actual_request_provider(self):
@@ -85,7 +86,7 @@ class HermesPluginTests(unittest.TestCase):
         with patch.dict("sys.modules", {"hermes_cli.profiles": profiles}):
             self.assertEqual(self.plugin._profile_name(), "dev-team")
 
-    def test_registration_reports_only_the_running_profile(self):
+    def test_registration_reports_active_profile_and_discovery_without_secrets(self):
         self.profile_patch.stop()
         profiles = Mock()
         profiles.get_active_profile_name.return_value = "research"
@@ -103,19 +104,70 @@ class HermesPluginTests(unittest.TestCase):
         event = self.event()
         self.assertEqual(event["type"], "hermes.profile")
         self.assertEqual(event["properties"], {"profile": "research"})
-        profiles.list_profiles.assert_not_called()
         self.assertNotIn("sessionID", event["properties"])
         self.assertNotIn("must-not-be-forwarded", json.dumps(event))
+        discovery = self.event()
+        self.assertEqual(discovery["type"], "hermes.profiles")
+        self.assertEqual(discovery["properties"], {"profiles": ["dev-team", "research"]})
+        self.assertNotIn("sessionID", discovery["properties"])
+        self.assertNotIn("must-not-be-forwarded", json.dumps(discovery))
+
+    def test_profile_discovery_falls_back_to_directory_names_on_any_api_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("zeta", "alpha", "default"):
+                (root / name).mkdir()
+            (root / "not-a-profile").write_text("ignored", encoding="utf-8")
+            for error in (ModuleNotFoundError("No module named 'ruamel'"), RuntimeError("unavailable")):
+                with self.subTest(error=error):
+                    profiles = Mock(spec=["list_profiles", "_get_profiles_root"])
+                    profiles.list_profiles.side_effect = error
+                    profiles._get_profiles_root.return_value = root
+                    with patch.dict("sys.modules", {"hermes_cli.profiles": profiles}), \
+                            patch.object(self.plugin, "_profile_name", return_value="alpha"), \
+                            self.assertLogs(self.plugin.logger, level="DEBUG") as logs:
+                        self.plugin._publish_profiles()
+                    self.assertTrue(all(record.levelname == "DEBUG" for record in logs.records))
+                    self.assertEqual(self.event(), {
+                        "source": "hermes",
+                        "type": "hermes.profiles",
+                        "properties": {"profiles": ["alpha", "default", "zeta"]},
+                    })
+                    profiles._get_profiles_root.assert_called_once_with()
+
+    def test_profile_discovery_uses_standard_home_when_root_helper_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".hermes/profiles/research").mkdir(parents=True)
+            profiles = Mock(spec=["list_profiles", "_get_profiles_root"])
+            profiles.list_profiles.side_effect = ImportError("isolated runtime")
+            profiles._get_profiles_root.side_effect = RuntimeError("root unavailable")
+            with patch.dict("sys.modules", {"hermes_cli.profiles": profiles}), \
+                    patch.object(self.plugin.Path, "home", return_value=home), \
+                    patch.object(self.plugin, "_profile_name", return_value="research"), \
+                    self.assertLogs(self.plugin.logger, level="DEBUG"):
+                self.plugin._publish_profiles()
+            self.assertEqual(self.event()["properties"]["profiles"], ["default", "research"])
+
+    def test_profile_discovery_without_hermes_or_named_profiles_still_reports_default(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict("sys.modules", {"hermes_cli.profiles": None}), \
+                patch.object(self.plugin.Path, "home", return_value=Path(directory)), \
+                patch.object(self.plugin, "_profile_name", return_value=""), \
+                self.assertLogs(self.plugin.logger, level="DEBUG"):
+            self.plugin._publish_profiles()
+        self.assertEqual(self.event()["properties"]["profiles"], ["default"])
 
     def test_registration_does_not_invent_an_unknown_profile(self):
         with patch.object(self.plugin, "_profile_name", return_value=""), \
                 patch.object(self.plugin.threading, "Thread"), \
                 patch.object(self.plugin.atexit, "register"), \
+                patch.object(self.plugin, "_publish_profiles"), \
                 patch.object(self.plugin, "_resolve_endpoint", return_value="http://localhost/events"):
             self.plugin.register(Mock())
         self.assertTrue(self.plugin._events.empty())
 
-    def test_turn_end_is_idle_and_only_finalization_removes_the_session(self):
+    def test_turn_end_and_finalization_keep_the_profile_idle_and_clear_tools(self):
         self.hook("pre_llm_call", session_id="one")
         self.event()
         self.hook("pre_tool_call", session_id="one", tool_name="terminal")
@@ -126,9 +178,14 @@ class HermesPluginTests(unittest.TestCase):
         self.assertFalse(self.plugin._tools)
         self.hook("pre_api_request", session_id="one", provider="nous")
         self.assertEqual(self.event()["properties"]["info"]["profile"], "dev-team")
+        self.hook("pre_tool_call", session_id="one", tool_name="terminal")
+        self.event()
         self.hook("on_session_finalize", session_id="one")
-        self.assertEqual(self.event()["type"], "session.deleted")
-        self.assertFalse(self.plugin._sessions)
+        finalized = self.event()
+        self.assertEqual(finalized["type"], "session.idle")
+        self.assertEqual(finalized["properties"]["info"]["profile"], "dev-team")
+        self.assertIn("one", self.plugin._sessions)
+        self.assertFalse(self.plugin._tools)
         self.hook("on_session_reset", session_id="two")
         self.assertEqual(self.event()["type"], "session.created")
 
@@ -178,9 +235,9 @@ class HermesPluginTests(unittest.TestCase):
         self.assertEqual(self.event()["properties"]["todos"], [])
         self.hook("on_session_finalize", session_id="one")
         self.event()
-        self.assertFalse(self.plugin._todo_snapshots)
+        self.assertEqual(self.plugin._todo_snapshots["one"], [])
 
-    def test_children_keep_identity_metadata_and_are_forgotten_with_parent(self):
+    def test_children_keep_identity_and_only_stopped_subagents_are_removed(self):
         self.hook("on_session_start", session_id="parent", cwd="/work/parent")
         self.event()
         self.hook("subagent_start", session_id="parent", child_session_id="child",
@@ -195,13 +252,35 @@ class HermesPluginTests(unittest.TestCase):
         self.assertEqual(tool["info"]["agent"], "research")
         self.assertEqual(tool["info"]["parentSessionId"], "parent")
         self.hook("subagent_stop", child_session_id="child")
-        self.assertEqual(self.event()["properties"]["sessionID"], "child")
+        stopped = self.event()
+        self.assertEqual(stopped["type"], "session.deleted")
+        self.assertEqual(stopped["properties"]["sessionID"], "child")
         self.assertNotIn("child", self.plugin._sessions)
         self.hook("subagent_start", child_session_id="second", parent_session_id="parent")
         self.event()
         self.hook("on_session_finalize", session_id="parent")
+        self.assertEqual(self.event()["type"], "session.idle")
+        self.assertEqual(set(self.plugin._sessions), {"parent", "second"})
+
+    def test_exit_flush_deletes_each_retained_session_once_with_profile_metadata(self):
+        self.hook("on_session_start", session_id="parent")
         self.event()
+        self.hook("subagent_start", child_session_id="child", parent_session_id="parent")
+        self.event()
+        self.hook("on_session_finalize", session_id="parent")
+        self.event()
+        with patch.object(self.plugin, "_worker", Mock()), \
+                patch.object(self.plugin, "_enqueue") as enqueue:
+            self.plugin._flush()
+            events = [call.args[0] for call in enqueue.call_args_list]
+            self.assertEqual([event["type"] for event in events], ["session.deleted"] * 2)
+            self.assertEqual({event["properties"]["sessionID"] for event in events}, {"parent", "child"})
+            self.assertTrue(all(event["properties"]["info"]["profile"] == "dev-team" for event in events))
+            self.plugin._flush()
+            self.assertEqual(enqueue.call_count, 2)
         self.assertFalse(self.plugin._sessions)
+        self.assertFalse(self.plugin._todo_snapshots)
+        self.assertFalse(self.plugin._tools)
 
     def test_ambiguous_approvals_are_logged_not_misattributed(self):
         for sid in ("one", "two"):

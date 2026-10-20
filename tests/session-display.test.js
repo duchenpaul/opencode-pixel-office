@@ -6,7 +6,7 @@ import { AgentPanel } from "../client/src/components/AgentPanel.tsx";
 import { SessionPanel } from "../client/src/components/SessionPanel.tsx";
 import { TodoPanel } from "../client/src/components/TodoPanel.tsx";
 import { formatSessionName, getHermesResumeCommand, getSessionDisplayId } from "../client/src/lib/session.ts";
-import { matchesHermesProfile } from "../client/src/lib/hermes.ts";
+import { getHermesProfiles, matchesHermesProfile, UNPROFILED_HERMES } from "../client/src/lib/hermes.ts";
 
 const session = {
   id: "hermes:20261020-abcdef", source: "hermes",
@@ -30,7 +30,7 @@ test("session labels use the assigned English name while retaining repository co
   assert.equal(formatSessionName({ ...session, displayName: "Tom 2" }), "Tom 2 · repo");
 });
 
-test("Hermes views follow the runtime profile without mixing unknown sessions", () => {
+test("Hermes views filter by selected profile without mixing unknown sessions", () => {
   const agents = [
     { id: "one", source: "hermes", profile: "dev-team" },
     { id: "two", source: "hermes", profile: "research" },
@@ -40,9 +40,13 @@ test("Hermes views follow the runtime profile without mixing unknown sessions", 
   const hermes = agents.filter((agent) => agent.source === "hermes");
   assert.deepEqual(hermes.filter((agent) => matchesHermesProfile(agent, "dev-team")).map((agent) => agent.id), ["one"]);
   assert.deepEqual(hermes.filter((agent) => matchesHermesProfile(agent, "research")).map((agent) => agent.id), ["two"]);
-  assert.deepEqual(hermes.filter((agent) => matchesHermesProfile(agent, null)).map((agent) => agent.id), ["three"]);
+  assert.deepEqual(hermes.filter((agent) => matchesHermesProfile(agent, UNPROFILED_HERMES)).map((agent) => agent.id), ["three"]);
+  assert.deepEqual(hermes.filter((agent) => matchesHermesProfile(agent, "")).map((agent) => agent.id), ["one", "two", "three"]);
   assert.equal(matchesHermesProfile({}, "default"), false);
-  assert.equal(matchesHermesProfile({ profile: "dev-team" }, null), false);
+  assert.equal(matchesHermesProfile({ profile: "dev-team" }, UNPROFILED_HERMES), false);
+  assert.deepEqual(getHermesProfiles(["research", "default"], "default", agents, [
+    { id: "idle", source: "hermes", profile: "idle-profile" },
+  ]), ["default", "dev-team", "idle-profile", "research"]);
 });
 
 test("Hermes resume commands use the full raw ID and safely quote shell arguments", () => {

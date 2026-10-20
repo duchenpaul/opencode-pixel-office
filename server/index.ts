@@ -31,6 +31,13 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 
 const validHermesProfile = (value: unknown): value is string =>
   typeof value === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value);
+const configPath = path.join(os.homedir(), ".opencode", "pixel-office", "config.json");
+const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+const hermesDefaultProfile: string = config.hermesProfile ?? "default";
+if (!validHermesProfile(hermesDefaultProfile)) {
+  throw new Error(`Invalid Hermes profile in ${configPath}`);
+}
+const hermesProfiles = new Set<string>([hermesDefaultProfile]);
 let hermesActiveProfile: string | null = null;
 
 type BossMessage = {
@@ -1061,6 +1068,8 @@ const getStateSnapshot = () => {
     ),
     bossMessage: officeState.bossMessage,
     networkIp: officeState.networkIp,
+    hermesProfiles: Array.from(hermesProfiles).sort(),
+    hermesDefaultProfile,
     hermesActiveProfile,
     updatedAt: Date.now(),
   };
@@ -1079,12 +1088,24 @@ app.post("/events", (req: any, res: any) => {
   let event = req.body as EventPayload;
   if (event?.source === "hermes") {
     const props = event.properties || {};
+    if (getEventType(event) === "hermes.profiles") {
+      if (!Array.isArray(props.profiles) || props.profiles.length > 256 ||
+          !props.profiles.every(validHermesProfile)) {
+        res.status(400).json({ error: "Hermes profile discovery requires a list of valid profile names" });
+        return;
+      }
+      for (const profile of props.profiles) hermesProfiles.add(profile);
+      broadcast({ type: "state", state: getStateSnapshot() });
+      res.status(202).json({ ok: true });
+      return;
+    }
     if (getEventType(event) === "hermes.profile") {
       if (!validHermesProfile(props.profile)) {
         res.status(400).json({ error: "Hermes runtime profile requires a valid profile name" });
         return;
       }
       hermesActiveProfile = props.profile;
+      hermesProfiles.add(props.profile);
       broadcast({ type: "state", state: getStateSnapshot() });
       res.status(202).json({ ok: true });
       return;
@@ -1111,6 +1132,7 @@ app.post("/events", (req: any, res: any) => {
       }
       profile = matches[0]?.profile || "";
     }
+    if (profile) hermesProfiles.add(profile);
     const namespace = (id: string) => profile
       ? `hermes:${encodeURIComponent(profile)}:${encodeURIComponent(id)}`
       : `hermes:${encodeURIComponent(id)}`;

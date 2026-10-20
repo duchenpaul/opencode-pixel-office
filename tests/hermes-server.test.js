@@ -233,8 +233,8 @@ test("Hermes active profile comes only from runtime events, never installation s
   const { snapshot, post, send } = await startServer(t, { hermesProfile: "dev-team" });
   let state = await snapshot();
   assert.equal(state.hermesActiveProfile, null);
-  assert.equal("hermesDefaultProfile" in state, false);
-  assert.equal("hermesProfiles" in state, false);
+  assert.equal(state.hermesDefaultProfile, "dev-team");
+  assert.deepEqual(state.hermesProfiles, ["dev-team"]);
   state = await post({
     source: "hermes", type: "hermes.profile", properties: { profile: "default" },
   });
@@ -244,6 +244,39 @@ test("Hermes active profile comes only from runtime events, never installation s
   state = await send("session.created", "legacy");
   assert.equal(state.hermesActiveProfile, null);
   assert.equal(state.agents.find((agent) => agent.source === "hermes").profile, "");
+});
+
+test("Hermes discovery lists machine profiles without changing session identity or status", async (t) => {
+  const { snapshot, post, base } = await startServer(t);
+  let state = await snapshot();
+  assert.equal(state.hermesDefaultProfile, "default");
+  assert.deepEqual(state.hermesProfiles, ["default"]);
+  state = await post({
+    source: "hermes", type: "hermes.profiles",
+    properties: { profiles: ["research", "default", "dev-team", "research"] },
+  });
+  assert.deepEqual(state.hermesProfiles, ["default", "dev-team", "research"]);
+  assert.equal(state.hermesActiveProfile, null);
+  assert.equal(state.sessions.length, 0);
+  assert.equal(state.agents.length, 0);
+  for (const type of ["session.created", "session.idle"]) {
+    state = await post({
+      source: "hermes", type,
+      properties: { sessionID: "idle-profile", info: { profile: "other-profile" } },
+    });
+  }
+  assert.deepEqual(state.hermesProfiles, ["default", "dev-team", "other-profile", "research"]);
+  assert.equal(state.agents[0].profile, "other-profile");
+  assert.equal(state.agents[0].status, "idle");
+  assert.equal(state.sessions[0].status, "idle");
+  for (const profiles of [["../bad"], [""], [1], "research", Array(257).fill("valid"), undefined]) {
+    const response = await fetch(`${base}/events`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source: "hermes", type: "hermes.profiles", properties: { profiles } }),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.deepEqual((await snapshot()).hermesProfiles, state.hermesProfiles);
 });
 
 test("Hermes activity without repeated profile metadata retains the resolved runtime profile", async (t) => {
