@@ -6,6 +6,7 @@ import { SessionPanel } from "./components/SessionPanel";
 import { TodoPanel } from "./components/TodoPanel";
 import { useOfficeState } from "./useOfficeState";
 import type { OfficeSource } from "./useOfficeState";
+import { formatSessionName } from "./lib/session";
 
 type OfficeTab = OfficeSource;
 
@@ -19,8 +20,6 @@ const App = () => {
     activeSessionId,
     selectedSessionId,
     selectedAgentId,
-    selectedSession,
-    selectedAgent,
     appVersion,
     lastTodoSummary,
     bossMessage,
@@ -30,23 +29,7 @@ const App = () => {
   } = useOfficeState();
 
   const [showQr, setShowQr] = useState(false);
-  const [activeTab, setActiveTab] = useState<OfficeTab>("opencode");
-
-  // Filter agents by source
-  const filteredAgents = useMemo(() => {
-    return agents.filter((agent) => {
-      const source = agent.source || "opencode";
-      return source === activeTab;
-    });
-  }, [agents, activeTab]);
-
-  // Filter interactions to only include agents in the current tab
-  const filteredInteractions = useMemo(() => {
-    const agentIds = new Set(filteredAgents.map((a) => a.id));
-    return interactions.filter(
-      (i) => agentIds.has(i.from) || agentIds.has(i.to)
-    );
-  }, [interactions, filteredAgents]);
+  const [selectedTab, setSelectedTab] = useState<OfficeTab | null>(null);
 
   // Count agents per tab for badges
   const opencodeCount = useMemo(
@@ -61,20 +44,58 @@ const App = () => {
     () => agents.filter((a) => a.source === "hermes").length,
     [agents]
   );
+  const activeTab = selectedTab ?? (
+    opencodeCount >= claudeCount && opencodeCount >= hermesCount
+      ? "opencode"
+      : claudeCount >= hermesCount ? "claude" : "hermes"
+  );
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const activeRepoName = activeSession?.directory?.split("/").pop()
-    || activeSession?.title
-    || activeSession?.slug
-    || "";
-  const activeLabel = activeSession
-    ? activeRepoName
-      ? `${activeRepoName} · ${activeSessionId?.slice(0, 6)}`
-      : activeSessionId?.slice(0, 6) || "N/A"
-    : "N/A";
+  // Filter agents by source
+  const filteredAgents = useMemo(() => {
+    return agents.filter((agent) => {
+      const source = agent.source || "opencode";
+      return source === activeTab;
+    });
+  }, [agents, activeTab]);
+
+  const filteredSessions = useMemo(
+    () => sessions.filter((session) => (session.source || "opencode") === activeTab),
+    [sessions, activeTab]
+  );
+  const selectedSession = filteredSessions.find((session) => session.id === selectedSessionId)
+    || filteredSessions.find((session) => session.id === activeSessionId)
+    || filteredSessions[0]
+    || null;
+  const selectedAgent = filteredAgents.find((agent) => agent.id === selectedAgentId) || null;
+  const useLegacyTodos = activeTab !== "hermes" && selectedSession?.id === activeSessionId;
+  const sessionTodos = selectedSession?.todos ?? (useLegacyTodos ? todos : []);
+  const sessionTodoSummary = selectedSession?.lastTodoSummary
+    ?? (useLegacyTodos ? lastTodoSummary : null);
+
+  const selectAgent = (id: string | null) => {
+    setSelectedAgentId(id);
+    const sessionId = filteredAgents.find((agent) => agent.id === id)?.sessionId;
+    if (sessionId) setSelectedSessionId(sessionId);
+  };
+  const selectSession = (id: string | null) => {
+    setSelectedSessionId(id);
+    setSelectedAgentId(filteredAgents.find((agent) => agent.sessionId === id)?.id || null);
+  };
+
+  // Filter interactions to only include agents in the current tab
+  const filteredInteractions = useMemo(() => {
+    const agentIds = new Set(filteredAgents.map((a) => a.id));
+    return interactions.filter(
+      (i) => agentIds.has(i.from) || agentIds.has(i.to)
+    );
+  }, [interactions, filteredAgents]);
+
+  const activeSession = filteredSessions.find((session) => session.id === activeSessionId)
+    || selectedSession;
+  const activeLabel = activeSession ? formatSessionName(activeSession) : "N/A";
   const version = appVersion ? `v${appVersion}` : "v1.0.0";
-  const todoSummary = lastTodoSummary
-    ? `${lastTodoSummary.completed}/${lastTodoSummary.total}`
+  const todoSummary = sessionTodoSummary
+    ? `${sessionTodoSummary.completed}/${sessionTodoSummary.total}`
     : "0/0";
   const bossMessageText = bossMessage?.text || "Awaiting mission updates...";
   const bossStatus = bossMessage?.status ? bossMessage.status.toUpperCase() : "IDLE";
@@ -92,7 +113,7 @@ const App = () => {
         {/* Office Tabs */}
         <div className="flex gap-1">
           <button
-            onClick={() => setActiveTab("opencode")}
+            onClick={() => setSelectedTab("opencode")}
             className={`office-tab ${activeTab === "opencode" ? "active" : ""}`}
           >
             <span className="tab-icon">◈</span>
@@ -102,7 +123,7 @@ const App = () => {
             )}
           </button>
           <button
-            onClick={() => setActiveTab("claude")}
+            onClick={() => setSelectedTab("claude")}
             className={`office-tab ${activeTab === "claude" ? "active" : ""}`}
           >
             <span className="tab-icon">◇</span>
@@ -112,7 +133,7 @@ const App = () => {
             )}
           </button>
           <button
-            onClick={() => setActiveTab("hermes")}
+            onClick={() => setSelectedTab("hermes")}
             className={`office-tab ${activeTab === "hermes" ? "active" : ""}`}
           >
             <span className="tab-icon">H</span>
@@ -160,26 +181,26 @@ const App = () => {
           bossStatus={bossStatus}
           agents={filteredAgents}
           interactions={filteredInteractions}
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          lastTodoSummary={lastTodoSummary}
+          sessions={filteredSessions}
+          activeSessionId={activeSession?.id || null}
+          lastTodoSummary={sessionTodoSummary}
           selectedAgentId={selectedAgentId}
-          onSelectAgent={setSelectedAgentId}
+          onSelectAgent={selectAgent}
           activeTab={activeTab}
         />
 
         <aside className="sidebar-stack">
           <SessionPanel
-            sessions={sessions}
+            sessions={filteredSessions}
             activeLabel={activeLabel}
             version={version}
             todoSummary={todoSummary}
-            selectedSessionId={selectedSessionId}
+            selectedSessionId={selectedSession?.id || null}
             selectedSession={selectedSession}
-            onSelectSession={setSelectedSessionId}
+            onSelectSession={selectSession}
           />
-          <TodoPanel todos={todos} />
-          <AgentPanel selectedAgent={selectedAgent} sessions={sessions} />
+          <TodoPanel todos={sessionTodos} />
+          <AgentPanel selectedAgent={selectedAgent} sessions={filteredSessions} />
         </aside>
       </main>
     </div>

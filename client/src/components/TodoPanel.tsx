@@ -17,7 +17,7 @@ const TodoPanel = ({ todos }: TodoPanelProps) => (
         </div>
       ) : (
         todos.map((todo) => (
-          <div key={todo.id} className={`todo-item text-[10px] ${todo.status === 'completed' ? 'done' : ''} ${todo.status === 'in_progress' ? 'active' : ''}`}>
+          <div key={todo.id} className={`todo-item text-[10px] ${todo.status === 'completed' || todo.status === 'cancelled' ? 'done' : ''} ${todo.status === 'in_progress' ? 'active' : ''}`}>
             <div className="flex justify-between items-start gap-2">
               <span className="leading-snug">{todo.content}</span>
               {todo.priority && todo.priority !== 'medium' && (
@@ -31,6 +31,9 @@ const TodoPanel = ({ todos }: TodoPanelProps) => (
             <div className="flex gap-2 mt-1">
               {todo.status === 'in_progress' && (
                 <span className="text-[8px] text-amber-500 animate-pulse">▶ IN PROGRESS</span>
+              )}
+              {todo.status === 'cancelled' && (
+                <span className="text-[8px] text-slate-500">CANCELLED</span>
               )}
             </div>
           </div>

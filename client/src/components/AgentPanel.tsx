@@ -1,4 +1,5 @@
 import type { Agent, SessionInfo } from "../useOfficeState";
+import { formatSessionName, getSessionContext, getSessionDisplayId } from "../lib/session";
 
 type AgentPanelProps = {
   selectedAgent: Agent | null;
@@ -6,14 +7,10 @@ type AgentPanelProps = {
 };
 
 const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
-  // Get repo name from the agent's session
   const agentSession = selectedAgent?.sessionId
     ? sessions.find((s) => s.id === selectedAgent.sessionId)
     : null;
-  const repoName = agentSession?.directory?.split("/").pop()
-    || agentSession?.title
-    || agentSession?.slug
-    || "";
+  const repoName = agentSession ? getSessionContext(agentSession) : "";
 
   return (
     <div className="data-panel">
@@ -52,15 +49,22 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
               <span className="stat-label">Provider</span>
               <span className="stat-value">{selectedAgent.provider || "Unknown"}</span>
             </div>
+            {selectedAgent.profile && selectedAgent.role && (
+              <div className="stat-box col-span-2">
+                <span className="stat-label">Profile</span>
+                <span className="stat-value">{selectedAgent.profile}</span>
+              </div>
+            )}
           </div>
 
           {selectedAgent.sessionId && (
             <div className="border-t border-slate-700 pt-2">
               <span className="stat-label mb-1">Assigned Session</span>
-              <div className="text-[9px] font-mono text-emerald-400/80 bg-emerald-950/30 p-1.5 rounded border border-emerald-900/50 truncate">
-                {repoName
-                  ? `${repoName} · ${selectedAgent.sessionId.slice(0, 6)}`
-                  : selectedAgent.sessionId.slice(0, 6)}
+              <div
+                className="text-[9px] font-mono text-emerald-400/80 bg-emerald-950/30 p-1.5 rounded border border-emerald-900/50 truncate"
+                title={getSessionDisplayId(selectedAgent.sessionId)}
+              >
+                {formatSessionName(agentSession || { id: selectedAgent.sessionId })}
               </div>
             </div>
           )}

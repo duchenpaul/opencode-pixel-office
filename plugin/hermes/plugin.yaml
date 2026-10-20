@@ -10,3 +10,6 @@ hooks:
   - subagent_stop
   - pre_approval_request
   - post_approval_response
+  - pre_llm_call
+  - pre_api_request
+  - post_llm_call

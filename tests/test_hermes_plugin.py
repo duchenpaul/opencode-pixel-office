@@ -15,6 +15,10 @@ class HermesPluginTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("hermes_office_test", source)
         self.plugin = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.plugin)
+        profile = patch.object(self.plugin, "_profile_name", return_value="dev-team", create=True)
+        profile.start()
+        self.profile_patch = profile
+        self.addCleanup(profile.stop)
 
     def event(self):
         result = self.plugin._events.get_nowait()
@@ -24,13 +28,13 @@ class HermesPluginTests(unittest.TestCase):
     def hook(self, name, **kw):
         self.plugin._observer(name)(**kw)
 
-    def test_registers_eight_non_transforming_hooks(self):
+    def test_registers_non_transforming_hooks(self):
         ctx = Mock()
         with patch.object(self.plugin.threading, "Thread"), \
                 patch.object(self.plugin.atexit, "register"), \
                 patch.object(self.plugin, "_resolve_endpoint", return_value="http://localhost/events"):
             self.plugin.register(ctx)
-        self.assertEqual(ctx.register_hook.call_count, 8)
+        self.assertEqual(ctx.register_hook.call_count, 11)
         for call in ctx.register_hook.call_args_list:
             self.assertIsNone(call.args[1](unexpected_future_field=True))
 
@@ -54,14 +58,91 @@ class HermesPluginTests(unittest.TestCase):
         self.assertFalse(self.plugin._sessions)
         self.assertFalse(self.plugin._tools)
 
+    def test_runtime_metadata_uses_profile_and_actual_request_provider(self):
+        self.hook("on_session_start", session_id="one", model="test-model")
+        info = self.event()["properties"]["info"]
+        self.assertEqual(info["agent"], "dev-team")
+        self.assertEqual(info["profile"], "dev-team")
+        self.assertEqual(info["directory"], str(Path.cwd()))
+        self.assertEqual(info["model"]["modelID"], "test-model")
+        self.hook("pre_api_request", session_id="one", model="switched-model",
+                  provider="openrouter", base_url="https://example.invalid",
+                  api_key="must-not-be-forwarded", conversation_history=[])
+        request = self.event()
+        self.assertEqual(request["type"], "session.updated")
+        self.assertEqual(request["properties"]["info"]["model"],
+                         {"modelID": "switched-model", "providerID": "openrouter"})
+        self.assertNotIn("must-not-be-forwarded", json.dumps(request))
+        self.hook("pre_tool_call", session_id="one", tool_name="terminal")
+        info = self.event()["properties"]["info"]
+        self.assertEqual(info["agent"], "dev-team")
+        self.assertEqual(info["model"]["providerID"], "openrouter")
+
+    def test_profile_resolver_uses_hermes_profile_api(self):
+        self.profile_patch.stop()
+        profiles = Mock()
+        profiles.get_active_profile_name.return_value = "dev-team"
+        with patch.dict("sys.modules", {"hermes_cli.profiles": profiles}):
+            self.assertEqual(self.plugin._profile_name(), "dev-team")
+
+    def test_todos_follow_authoritative_results_not_partial_merge_arguments(self):
+        items = [{"id": "1", "content": "Investigate", "status": "completed"},
+                 {"id": "2", "content": "Fix mapping", "status": "in_progress"}]
+        self.hook("post_tool_call", session_id="one", tool_name="todo",
+                  args={"todos": [{"id": "1", "status": "completed"}], "merge": True},
+                  result=json.dumps({"todos": items}))
+        self.assertEqual(self.event()["type"], "tool.execute.after")
+        todos = self.event()
+        self.assertEqual(todos["type"], "todo.updated")
+        self.assertEqual(todos["properties"]["todos"], items)
+        self.assertEqual(todos["properties"]["sessionID"], "one")
+        self.hook("post_tool_call", session_id="one", tool_name="todo",
+                  result=json.dumps({"todos": items}))
+        self.event()
+        self.assertTrue(self.plugin._events.empty())
+        self.hook("post_tool_call", session_id="two", tool_name="todo",
+                  result={"todos": []})
+        self.event()
+        self.assertEqual(self.event()["properties"]["todos"], [])
+        with self.assertLogs(self.plugin.logger, level="WARNING"):
+            self.hook("post_tool_call", session_id="one", tool_name="todo", result="invalid")
+        self.event()
+        self.assertTrue(self.plugin._events.empty())
+
+    def test_agent_loop_todos_sync_from_history_without_post_tool_hook(self):
+        items = [{"id": "1", "content": "Finish", "status": "completed"}]
+        history = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "todo-call", "function": {"name": "todo"}}]},
+            {"role": "tool", "tool_call_id": "todo-call",
+             "content": json.dumps({"todos": items})},
+            {"role": "tool", "name": "terminal", "content": '{"todos": []}'},
+        ]
+        self.hook("pre_api_request", session_id="one", model="test-model",
+                  provider="nous", conversation_history=history)
+        self.assertEqual(self.event()["type"], "session.updated")
+        self.assertEqual(self.event()["properties"]["todos"], items)
+        self.hook("post_llm_call", session_id="one", conversation_history=history)
+        self.assertEqual(self.event()["type"], "session.idle")
+        self.assertTrue(self.plugin._events.empty())
+        history.append({"role": "tool", "name": "todo", "content": '{"todos": []}'})
+        self.hook("pre_llm_call", session_id="one", conversation_history=history)
+        self.assertEqual(self.event()["type"], "session.updated")
+        self.assertEqual(self.event()["properties"]["todos"], [])
+        self.hook("on_session_end", session_id="one")
+        self.event()
+        self.assertFalse(self.plugin._todo_snapshots)
+
     def test_children_keep_identity_metadata_and_are_forgotten_with_parent(self):
-        self.hook("on_session_start", session_id="parent")
+        self.hook("on_session_start", session_id="parent", cwd="/work/parent")
         self.event()
         self.hook("subagent_start", session_id="parent", child_session_id="child",
                   parent_session_id="parent", child_role="research", child_goal="Investigate")
         child = self.event()["properties"]
         self.assertEqual(child["sessionID"], "child")
         self.assertEqual(child["parentSessionId"], "parent")
+        self.assertEqual(child["info"]["profile"], "dev-team")
+        self.assertEqual(child["info"]["directory"], "/work/parent")
         self.hook("pre_tool_call", session_id="child", tool_name="read_file")
         tool = self.event()["properties"]
         self.assertEqual(tool["info"]["agent"], "research")

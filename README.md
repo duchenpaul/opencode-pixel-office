@@ -10,7 +10,7 @@ A pixel-art office visualization for AI assistants. Works with **OpenCode**, **C
 
 - **Multi-provider Support**: Works with OpenCode, Claude Code CLI, and Hermes
 - **Live Visualization**: Real-time pixel-art office showing agent activity
-- **Tabbed Interface**: Switch between OpenCode, Claude, and Hermes Office views
+- **Tabbed Interface**: Defaults to the OpenCode, Claude, or Hermes view with the largest badge count. Manual selections stay active until reload; ties use that tab order.
 - **Mobile Ready**: Connect via local network + QR code
 - **Session Tracking**: Monitor multiple sessions across different repos
 
@@ -28,6 +28,8 @@ opencode-pixel-office start
 ```
 
 That's it! The dashboard opens at `http://localhost:5100`.
+For Hermes enablement, custom profiles, and quest synchronization, see
+[Hermes](#hermes).
 
 ### Install the Hermes branch from git
 
@@ -64,26 +66,12 @@ Linux, `start` prints the dashboard URL without trying to open a browser.
 
 ## How It Works
 
-```
-┌─────────────┐     ┌─────────────┐
-│  OpenCode   │     │ Claude Code │
-│   Plugin    │     │    Hooks    │
-└──────┬──────┘     └──────┬──────┘
-       │                   │
-       │   HTTP POST       │
-       └───────┬───────────┘
-               ▼
-       ┌───────────────┐
-       │ Pixel Office  │
-       │    Server     │
-       │   :5100       │
-       └───────┬───────┘
-               │ WebSocket
-               ▼
-       ┌───────────────┐
-       │    Browser    │
-       │   Dashboard   │
-       └───────────────┘
+```mermaid
+flowchart TD
+    opencode["OpenCode Plugin"] -->|"HTTP POST /events"| server["Pixel Office Server<br/>:5100"]
+    claude["Claude Code Hooks"] -->|"HTTP POST /events"| server
+    hermes["Hermes Plugin"] -->|"HTTP POST /events"| server
+    server -->|WebSocket| browser["Browser Dashboard"]
 ```
 
 - **OpenCode Plugin** → `~/.opencode/plugins/pixel-office.js`
@@ -93,28 +81,102 @@ Linux, `start` prints the dashboard URL without trying to open a browser.
 
 ## Hermes
 
+### Setup
+
+Use a Hermes installation with native plugin support (`hermes plugins`).
 The installer copies a native observer plugin and runs
 `hermes plugins enable opencode-pixel-office`. If Hermes is not on `PATH`, it
-reports **enablement pending**; run that command once Hermes is available.
-Start a **new Hermes session** after installing or enabling the plugin, then
-select the **Hermes** tab in the dashboard.
+reports **enablement pending**. Once Hermes is available, enable it manually:
 
-Main sessions, delegated subagents, tool activity/errors, and approval waiting
-states are supported. Only metadata supplied by Hermes hooks is displayed;
-prompt streaming, todo synchronization, and historical sessions are not imported.
+```bash
+hermes plugins enable opencode-pixel-office
+```
+
+Restart Hermes after installing or enabling the plugin, then start a **new
+Hermes session** and send a prompt to generate activity. The
+dashboard selects **Hermes** automatically when it has the largest badge count,
+or you can select its tab manually.
+
+### What appears in the dashboard
+
+- **Sessions and subagents**: Main sessions, delegated subagents, tool
+  activity/errors, and approval waiting states are supported. Main agents use
+  the active Hermes profile name (for example, `dev-team`); subagents keep
+  their role and profile.
+- **Runtime metadata**: Model and provider come from live request hooks,
+  including runtime model switches, not model-name or credential inference.
+  The provider remains unknown until Hermes supplies it on a request.
+- **Session labels**: Labels show the actual session ID rather than the internal
+  `hermes:` namespace. Select a session in the **Mission Log** or select its
+  agent to view its quests.
+- **Quest Log**: Quests are scoped to the selected session. Switching provider
+  tabs does not mix sessions or quests, and completed or cancelled quests remain
+  visible until Hermes replaces or clears the list, or the session ends.
+
+Quests synchronize from successful `todo` results and the latest todo result in
+Hermes's conversation history (the built-in todo tool can bypass tool-completion
+hooks). Partial merge arguments are never treated as a complete task list.
+Prompt streaming and historical sessions are not imported.
 Events use a bounded, best-effort background queue so an unavailable dashboard
 does not block Hermes. Delivery failures are logged, not replayed.
 
-Set `HERMES_HOME` before installation and when running Hermes if you use a custom
-profile. The plugin reads the port saved by `install --port <number>` or
+### Profiles and connection settings
+
+By default, the plugin is installed in
+`~/.hermes/plugins/opencode-pixel-office/`. For a custom profile, set
+`HERMES_HOME` to that profile's Hermes home before installation and keep the same
+environment when launching Hermes:
+
+```bash
+# Replace this path with your profile's Hermes home
+export HERMES_HOME="/path/to/your/hermes-home"
+opencode-pixel-office install
+hermes
+```
+
+Repeat installation for each Hermes home you want to observe; all can send
+events to the same Pixel Office server.
+
+The plugin reads the port saved by `install --port <number>` or
 `start --port <number>` when a new Hermes process loads it (default: 5100).
 To override the destination, set `PIXEL_OFFICE_URL=http://127.0.0.1:5100/events`
-in the Hermes process environment. Restart Hermes after changing the port.
+in the Hermes process environment. Include the `/events` path and restart
+Hermes after changing the port or URL.
+
+### Upgrading and troubleshooting
+
+After upgrading the package, rerun `install` with the same `HERMES_HOME` used by
+your profile, restart Pixel Office, and restart Hermes with a new session:
+
+```bash
+opencode-pixel-office install
+opencode-pixel-office stop
+opencode-pixel-office start
+```
+
+To check installation and server connectivity (adjust the port if needed):
+
+```bash
+opencode-pixel-office status
+curl -fsS http://127.0.0.1:5100/health
+```
 
 `status` reports installed plugin files and the last installation's enablement
-result, not live Hermes plugin state. `uninstall` disables this plugin when the
-Hermes CLI is available and removes only its owned files; restart Hermes to
-unload observers. If the CLI is unavailable, follow the printed disable command.
+result, not live Hermes plugin state. A successful health check confirms the
+server is reachable, not that Hermes loaded the plugin. If no Hermes activity
+appears, check enablement for the correct `HERMES_HOME`, restart Hermes, and
+generate activity in a new session. Check Hermes logs for `Pixel Office`
+delivery errors and `~/.opencode/pixel-office/server.log` for server output.
+
+An HTTP test event proves connectivity only: it cannot populate profile,
+model, provider, or quests unless those fields were included in the event.
+An empty Quest Log is expected until Hermes produces a todo list for the
+selected session.
+
+`uninstall` disables this plugin when the Hermes CLI is available and removes
+only its owned files; restart Hermes to unload observers. If the CLI is
+unavailable, follow the printed disable command. Use the same `HERMES_HOME`
+that was used during installation.
 
 The hook contract is based on [Hermes Pixel Office](https://github.com/teknium1/hermes-pixel-office).
 This integration does not require its Python server on port 8113. Its `pixel-office`
@@ -167,7 +229,10 @@ pixel-opencode/
 ├── server/
 │   └── index.ts            # Express + WebSocket server
 ├── plugin/
-│   └── pixel-office.js     # OpenCode plugin
+│   ├── pixel-office.js     # OpenCode plugin
+│   └── hermes/
+│       ├── __init__.py     # Hermes observer hooks and event delivery
+│       └── plugin.yaml     # Hermes plugin manifest
 └── bin/
     ├── opencode-pixel-office.js  # CLI
     └── claude-code-hook.js       # Claude Code hook

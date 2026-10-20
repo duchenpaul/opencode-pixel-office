@@ -1,18 +1,5 @@
 import type { SessionInfo } from "../useOfficeState";
-
-// Format session display name: repo name + short session ID
-const formatSessionName = (session: SessionInfo) => {
-  const repoName = session.directory?.split("/").pop()
-    || session.title
-    || session.slug
-    || "";
-  const shortId = session.id.slice(0, 6);
-
-  if (repoName) {
-    return `${repoName} · ${shortId}`;
-  }
-  return shortId;
-};
+import { formatSessionName, getSessionDisplayId } from "../lib/session";
 
 type SessionPanelProps = {
   sessions: SessionInfo[];
@@ -76,6 +63,7 @@ const SessionPanel = ({
               <button
                 key={session.id}
                 type="button"
+                title={getSessionDisplayId(session.id)}
                 className={`session-item ${session.id === selectedSessionId ? "active" : ""}`}
                 onClick={() => onSelectSession(session.id)}
               >
@@ -93,7 +81,7 @@ const SessionPanel = ({
           <div className="space-y-1.5">
             <div className="flex flex-col">
               <span className="text-[8px] text-slate-500">Identifier</span>
-              <span className="text-[9px] text-slate-300 break-all">{formatSessionName(selectedSession)}</span>
+              <span className="text-[9px] text-slate-300 break-all">{getSessionDisplayId(selectedSession.id)}</span>
             </div>
             {selectedSession.status && (
               <div className="flex justify-between items-center">

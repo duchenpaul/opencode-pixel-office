@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import WebSocket from "ws";
 
-test("Hermes lifecycle is isolated, visible immediately, and cleaned up completely", async (t) => {
+const startServer = async (t) => {
   const child = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     cwd: new URL("..", import.meta.url),
     env: { ...process.env, PORT: "0" },
@@ -52,6 +52,11 @@ test("Hermes lifecycle is isolated, visible immediately, and cleaned up complete
     assert.equal(response.status, 202);
     return snapshot();
   };
+  return { send, snapshot, base };
+};
+
+test("Hermes lifecycle is isolated, visible immediately, and cleaned up completely", async (t) => {
+  const { send, snapshot, base } = await startServer(t);
   const agent = (state, sid) => state.agents.find((a) => a.sessionId === `hermes:${sid}`);
   let state = await send("session.created", "same");
   assert.equal(agent(state, "same").status, "idle");
@@ -112,4 +117,71 @@ test("Hermes lifecycle is isolated, visible immediately, and cleaned up complete
     body: JSON.stringify({ source: "hermes", type: "session.created" }),
   });
   assert.equal(invalid.status, 400);
+});
+
+test("Hermes metadata survives sparse events and quests belong to their session", async (t) => {
+  const { send } = await startServer(t);
+  const sid = "session-abcdef";
+  const session = (state, id) => state.sessions.find((s) => s.id === `hermes:${id}`);
+  let state = await send("session.created", sid, {
+    info: {
+      id: sid, sessionID: sid, agent: "dev-team", profile: "dev-team",
+      directory: "/work/repo", title: "Fix metadata",
+      model: { modelID: "test-model", providerID: "openrouter" },
+    },
+  });
+  let agent = state.agents[0];
+  assert.equal(agent.alias, "dev-team");
+  assert.equal(agent.profile, "dev-team");
+  assert.equal(agent.model, "test-model");
+  assert.equal(agent.provider, "openrouter");
+  assert.equal(agent.sessionId, `hermes:${sid}`);
+  assert.equal(session(state, sid).source, "hermes");
+
+  state = await send("session.updated", sid, {
+    info: { id: sid, sessionID: sid }, status: "thinking",
+  });
+  agent = state.agents[0];
+  assert.equal(agent.alias, "dev-team");
+  assert.equal(agent.model, "test-model");
+  assert.equal(agent.provider, "openrouter");
+  assert.equal(session(state, sid).directory, "/work/repo");
+  assert.equal(session(state, sid).title, "Fix metadata");
+  assert.equal(session(state, sid).profile, "dev-team");
+  assert.equal(session(state, sid).status, "thinking");
+
+  const todos = [
+    { id: "1", content: "Investigate", status: "completed" },
+    { id: "2", content: "Fix mapping", status: "in_progress" },
+    { id: "3", content: "Discard", status: "cancelled" },
+  ];
+  state = await send("todo.updated", sid, { todos });
+  assert.equal(session(state, sid).todos.length, 3);
+  assert.equal(session(state, sid).lastTodoSummary.completed, 1);
+  assert.equal(session(state, sid).lastTodoSummary.total, 3);
+  assert.equal(session(state, sid).status, "thinking");
+  assert.equal(state.agents[0].status, "thinking");
+  assert.deepEqual(state.todos, []);
+
+  state = await send("todo.updated", "other", {
+    todos: [{ id: "1", content: "Other session", status: "pending" }],
+  });
+  assert.equal(session(state, sid).todos[0].content, "Investigate");
+  assert.equal(session(state, "other").todos[0].content, "Other session");
+  state = await send("todo.updated", "oc-session", {
+    todos: [{ id: "1", content: "OpenCode task", status: "pending" }],
+  }, "opencode");
+  assert.equal(state.todos[0].content, "OpenCode task");
+  assert.equal(state.sessions.find((s) => s.id === "oc-session").source, "opencode");
+  assert.equal(session(state, sid).todos[0].content, "Investigate");
+
+  state = await send("todo.updated", sid, {
+    todos: [{ id: "1", content: "Done", status: "completed" }],
+  });
+  assert.equal(session(state, sid).todos.length, 1);
+  assert.equal(session(state, sid).lastTodoSummary.completed, 1);
+  assert.equal(session(state, sid).lastTodoSummary.total, 1);
+  state = await send("session.deleted", sid);
+  assert.equal(session(state, sid), undefined);
+  assert.equal(session(state, "other").todos[0].content, "Other session");
 });

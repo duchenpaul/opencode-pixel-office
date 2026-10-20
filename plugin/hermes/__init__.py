@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 _events: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
 _lock = threading.RLock()
 _sessions: dict[str, dict[str, Any]] = {}
+_todo_snapshots: dict[str, list[dict[str, str]]] = {}
 _tools: dict[tuple[int, str, str], int] = {}
 _worker: threading.Thread | None = None
 _endpoint = ""
@@ -75,21 +76,89 @@ def _publish(kind: str, sid: str, **properties: Any) -> None:
         logger.warning("Pixel Office event queue full; dropped %s for %s", kind, sid)
 
 
+def _profile_name() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return str(get_active_profile_name())
+    except ImportError as exc:
+        logger.warning("Pixel Office could not resolve the Hermes profile: %s", exc)
+        return ""
+
+
 def _remember(sid: str, kw: dict[str, Any]) -> None:
-    info = _sessions.setdefault(sid, {"agent": "Hermes"})
+    if sid not in _sessions:
+        parent = _sessions.get(str(kw.get("parent_session_id") or ""), {})
+        profile = str(kw.get("profile") or parent.get("profile") or _profile_name())
+        _sessions[sid] = {
+            "agent": profile or "Hermes",
+            "profile": profile,
+            "directory": parent.get("directory") or os.getcwd(),
+        }
+    info = _sessions[sid]
     for source, target in (("cwd", "directory"), ("directory", "directory"),
                            ("title", "title"), ("child_role", "agent"),
                            ("child_role", "role"), ("child_goal", "title")):
         if kw.get(source):
             info[target] = str(kw[source])
+    model_info = dict(info.get("model", {}))
     model = kw.get("model")
     if isinstance(model, str) and model:
-        info["model"] = {"modelID": model}
+        model_info["modelID"] = model
     elif isinstance(model, dict):
-        info["model"] = {
+        model_info.update({
             key: model[key] for key in ("modelID", "providerID")
             if isinstance(model.get(key), str) and model[key]
-        }
+        })
+    provider = kw.get("provider")
+    if isinstance(provider, str) and provider:
+        model_info["providerID"] = provider
+    if model_info:
+        info["model"] = model_info
+
+
+def _sync_todos(sid: str, result: Any) -> None:
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            logger.warning("Pixel Office skipped malformed todo result for %s", sid)
+            return
+    if not isinstance(result, dict) or not isinstance(result.get("todos"), list):
+        logger.warning("Pixel Office skipped todo result without a task list for %s", sid)
+        return
+    todos: list[dict[str, str]] = []
+    for item in result["todos"]:
+        if (not isinstance(item, dict)
+                or not all(isinstance(item.get(key), str) for key in ("id", "content", "status"))
+                or item["status"] not in ("pending", "in_progress", "completed", "cancelled")):
+            logger.warning("Pixel Office skipped invalid todo items for %s", sid)
+            return
+        todos.append({key: item[key] for key in ("id", "content", "status")})
+    if _todo_snapshots.get(sid) != todos:
+        _todo_snapshots[sid] = todos
+        _publish("todo.updated", sid, todos=todos)
+
+
+def _sync_history_todos(sid: str, history: Any) -> None:
+    if not isinstance(history, list):
+        return
+    todo_calls = set()
+    for message in history:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if (isinstance(call, dict) and isinstance(call.get("function"), dict)
+                    and call["function"].get("name") == "todo" and isinstance(call.get("id"), str)):
+                todo_calls.add(call["id"])
+    for message in reversed(history):
+        if (isinstance(message, dict) and message.get("role") == "tool"
+                and (message.get("name") == "todo"
+                     or message.get("tool_call_id") in todo_calls)):
+            _sync_todos(sid, message.get("content"))
+            return
 
 
 def _approval_session(kw: dict[str, Any]) -> str:
@@ -110,6 +179,7 @@ def _forget(sid: str) -> None:
     for child in children:
         _forget(child)
     _sessions.pop(sid, None)
+    _todo_snapshots.pop(sid, None)
     for key in list(_tools):
         if key[1] == sid:
             del _tools[key]
@@ -126,6 +196,11 @@ def _handle(hook: str, kw: dict[str, Any]) -> None:
     _remember(sid, kw)
     if hook == "on_session_start":
         _publish("session.created", sid)
+    elif hook in ("pre_llm_call", "pre_api_request", "post_llm_call"):
+        _publish("session.idle" if hook == "post_llm_call" else "session.updated",
+                 sid, status="idle" if hook == "post_llm_call" else "thinking")
+        # Hermes handles todo inside the agent loop, bypassing post_tool_call.
+        _sync_history_todos(sid, kw.get("conversation_history"))
     elif hook in ("on_session_end", "subagent_stop"):
         _publish("session.deleted", sid)
         _forget(sid)
@@ -155,6 +230,8 @@ def _handle(hook: str, kw: dict[str, Any]) -> None:
         _publish("tool.execute.after", sid, tool={"name": name},
                  status="error" if failed else "thinking",
                  preview=str(kw.get("error_message") or "")[:200])
+        if name == "todo" and not failed:
+            _sync_todos(sid, kw.get("result"))
     elif hook == "pre_approval_request":
         _publish("permission.asked", sid, preview="Awaiting approval")
     elif hook == "post_approval_response":
@@ -201,6 +278,6 @@ def register(ctx: Any) -> None:
         atexit.register(_flush)
     for hook in ("on_session_start", "on_session_end", "pre_tool_call", "post_tool_call",
                  "subagent_start", "subagent_stop", "pre_approval_request",
-                 "post_approval_response"):
+                 "post_approval_response", "pre_llm_call", "pre_api_request", "post_llm_call"):
         ctx.register_hook(hook, _observer(hook))
     logger.info("Pixel Office observers registered: %s", _endpoint)

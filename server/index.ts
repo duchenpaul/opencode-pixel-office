@@ -48,12 +48,16 @@ type TodoItem = {
 
 type SessionInfo = {
   id: string;
+  source?: "opencode" | "claude" | "hermes";
+  profile?: string;
   title?: string;
   slug?: string;
   status?: string;
   version?: string;
   directory?: string;
   projectId?: string;
+  todos?: TodoItem[];
+  lastTodoSummary?: TodoSummary;
   updatedAt: number;
 };
 
@@ -340,9 +344,10 @@ const extractSessionId = (event: EventPayload) => {
     eventType === "session.diff" ||
     eventType === "session.idle" ||
     eventType === "session.deleted" ||
-    eventType === "session.error"
+    eventType === "session.error" ||
+    eventType === "todo.updated"
   ) {
-    return safeString(props.sessionID ?? "", "");
+    return safeString(props.sessionID ?? info.sessionID, "");
   }
   if (eventType === "message.part.updated") {
     return safeString(part.sessionID ?? "", "");
@@ -445,9 +450,10 @@ const extractActiveSessionId = (event: EventPayload) => {
     eventType === "session.diff" ||
     eventType === "session.idle" ||
     eventType === "session.deleted" ||
-    eventType === "session.error"
+    eventType === "session.error" ||
+    eventType === "todo.updated"
   ) {
-    return safeString(props.sessionID ?? "", "");
+    return safeString(props.sessionID ?? info.sessionID, "");
   }
   if (eventType === "session.updated" || eventType === "session.created" || eventType === "session.compacted") {
     return safeString(info.id ?? "", "");
@@ -593,6 +599,8 @@ const extractSessionInfo = (event: EventPayload) => {
   }
   return {
     id: sessionId,
+    source: event.source || "opencode",
+    profile: safeString(info.profile, ""),
     title: safeString(info.title ?? "", ""),
     slug: safeString(info.slug ?? "", ""),
     status: "",
@@ -613,9 +621,19 @@ const upsertSession = (event: EventPayload) => {
     ? {
       ...existing,
       ...info,
+      ...(event.source === "hermes" ? {
+        profile: info.profile || existing.profile,
+        title: info.title || existing.title,
+        slug: info.slug || existing.slug,
+        version: info.version || existing.version,
+        directory: info.directory || existing.directory,
+        projectId: info.projectId || existing.projectId,
+        status: getEventType(event) === "todo.updated"
+          ? existing.status : mapStatusFromEvent(event),
+      } : {}),
       updatedAt: Date.now(),
     }
-    : info;
+    : { ...info, ...(event.source === "hermes" ? { status: mapStatusFromEvent(event) } : {}) };
   officeState.sessions.set(info.id, nextInfo);
 };
 
@@ -640,6 +658,7 @@ const updateSessionStatus = (event: EventPayload) => {
     }
     : {
       id: sessionId,
+      source: event.source || "opencode",
       title: safeString(info.title ?? "", ""),
       slug: safeString(info.slug ?? "", ""),
       status,
@@ -776,7 +795,9 @@ const upsertAgentFromEvent = (event: EventPayload) => {
 
   cleanedIds.forEach((agentId) => {
     const existing = officeState.agents.get(agentId);
-    const name = isSessionOnlyOrPartEvent(event) && event.source !== "hermes"
+    const name = event.source === "hermes"
+      ? safeString(props.info?.agent, existing?.name || "Hermes")
+      : isSessionOnlyOrPartEvent(event)
       ? existing?.name || agentId
       : extractAgentName(event, agentId);
     const alias = getAlias(agentId, name);
@@ -844,6 +865,7 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         status: nextStatus,
         source: existing.source || eventSource,
         ...(eventSource === "hermes" ? {
+          profile: safeString(props.info?.profile, existing.profile || ""),
           parentSessionId: props.parentSessionId || existing.parentSessionId || "",
           role: props.info?.role || existing.role || "",
         } : {}),
@@ -872,6 +894,7 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         status,
         source: eventSource,
         ...(eventSource === "hermes" ? {
+          profile: safeString(props.info?.profile, ""),
           parentSessionId: props.parentSessionId || "",
           role: props.info?.role || "",
         } : {}),
@@ -988,33 +1011,6 @@ app.post("/events", (req: any, res: any) => {
     }
   }
 
-  if (eventType === "todo.updated") {
-    const todos = Array.isArray(event?.properties?.todos)
-      ? event.properties.todos
-      : [];
-    const completed = todos.filter((todo) => todo.status === "completed").length;
-    const updatedAt = Date.now();
-    if (todos.length > 0 && completed === todos.length) {
-      officeState.lastTodoSummary = {
-        total: 0,
-        completed: 0,
-        updatedAt,
-      };
-      officeState.todos = [];
-    } else {
-      officeState.lastTodoSummary = {
-        total: todos.length,
-        completed,
-        updatedAt,
-      };
-      officeState.todos = todos.map((todo) => ({
-        id: safeString(todo.id, ""),
-        content: safeString(todo.content, ""),
-        status: safeString(todo.status, ""),
-        priority: safeString(todo.priority, ""),
-      }));
-    }
-  }
   const activeSessionId = extractActiveSessionId(event);
   if (activeSessionId) {
     officeState.activeSessionId = activeSessionId;
@@ -1024,8 +1020,43 @@ app.post("/events", (req: any, res: any) => {
   upsertSession(event);
   updateSessionStatus(event);
 
+  if (eventType === "todo.updated") {
+    const todos = Array.isArray(event?.properties?.todos)
+      ? event.properties.todos
+      : [];
+    const completed = todos.filter((todo) => todo.status === "completed").length;
+    const updatedAt = Date.now();
+    const clearCompleted = event.source !== "hermes" && todos.length > 0 && completed === todos.length;
+    const nextTodos = clearCompleted ? [] : todos.map((todo) => ({
+        id: safeString(todo.id, ""),
+        content: safeString(todo.content, ""),
+        status: safeString(todo.status, ""),
+        priority: safeString(todo.priority, ""),
+    }));
+    const summary = {
+      total: clearCompleted ? 0 : todos.length,
+      completed: clearCompleted ? 0 : completed,
+      updatedAt,
+    };
+    if (event.source !== "hermes") {
+      officeState.todos = nextTodos;
+      officeState.lastTodoSummary = summary;
+    }
+    const sessionId = extractSessionId(event);
+    if (sessionId) {
+      officeState.sessions.set(sessionId, {
+        ...officeState.sessions.get(sessionId),
+        id: sessionId,
+        source: event.source || "opencode",
+        todos: nextTodos,
+        lastTodoSummary: summary,
+        updatedAt,
+      });
+    }
+  }
+
   applySessionLifecycle(event);
-  const agentId = event.source === "hermes" && eventType === "session.deleted"
+  const agentId = event.source === "hermes" && (eventType === "session.deleted" || eventType === "todo.updated")
     ? null : upsertAgentFromEvent(event);
   updateBossMessage(event);
   const parentId = extractParentId(event);

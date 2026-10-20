@@ -10,6 +10,7 @@ type Agent = {
   provider?: string;
   status?: string;
   source?: OfficeSource;
+  profile?: string;
   lastMessageSnippet?: string;
   lastMessageAt?: number;
   lastStreamingAt?: number;
@@ -55,12 +56,16 @@ type TodoItem = {
 
 type SessionInfo = {
   id: string;
+  source?: OfficeSource;
+  profile?: string;
   title?: string;
   slug?: string;
   status?: string;
   version?: string;
   directory?: string;
   projectId?: string;
+  todos?: TodoItem[];
+  lastTodoSummary?: TodoSummary;
   updatedAt?: number;
 };
 
