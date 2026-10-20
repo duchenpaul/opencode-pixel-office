@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ActivityKind } from "../../server/activity";
 
 export type OfficeSource = "opencode" | "claude" | "hermes";
 
@@ -27,6 +28,13 @@ type Agent = {
     deskIndex?: number;
   };
   role?: string;
+  parentSessionId?: string;
+  activity?: ActivityKind | null;
+  activityUntil?: number;
+  toolName?: string;
+  approvalTool?: string;
+  approvalRequestId?: string;
+  approvalRequestedAt?: number;
 };
 
 type Interaction = {

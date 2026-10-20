@@ -11,6 +11,7 @@ type MessageBubbleData = {
   textX: number;
   textY: number;
   lines: string[];
+  approval?: boolean;
 };
 
 type MessageBubbleProps = {
@@ -33,10 +34,17 @@ const MessageBubble = ({ bubble, style }: MessageBubbleProps) => (
           bubble.width,
           bubble.height,
           4,
-          0xf1fff3,
-          0x3a5b3c,
+          bubble.approval ? 0xfff1f2 : 0xf1fff3,
+          bubble.approval ? 0xb91c1c : 0x3a5b3c,
           1.5
         );
+        if (bubble.approval) {
+          graphics.beginFill(0xfff1f2);
+          graphics.moveTo(bubble.x + bubble.width / 2 - 3, bubble.y + bubble.height);
+          graphics.lineTo(bubble.x + bubble.width / 2, bubble.y + bubble.height + 4);
+          graphics.lineTo(bubble.x + bubble.width / 2 + 3, bubble.y + bubble.height);
+          graphics.endFill();
+        }
       }}
     />
     {bubble.show && (

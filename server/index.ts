@@ -5,6 +5,8 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
+import { getToolActivity } from "./activity.js";
+import type { ActivityKind } from "./activity.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +35,11 @@ type BossMessage = {
   updatedAt: number;
 };
 
+type ActiveTool = { name: string; activity: ActivityKind | null };
+type PendingApproval = { tool: string; callId: string; requestedAt: number };
+const activeTools = new Map<string, Map<string, ActiveTool>>();
+const pendingApprovals = new Map<string, Map<string, PendingApproval>>();
+
 type TodoSummary = {
   total: number;
   completed: number;
@@ -48,6 +55,7 @@ type TodoItem = {
 
 type SessionInfo = {
   id: string;
+  parentSessionId?: string;
   displayName?: string;
   source?: "opencode" | "claude" | "hermes";
   profile?: string;
@@ -324,7 +332,7 @@ const extractAgentId = (event: EventPayload) => {
   const props = event?.properties || {};
   const info = props.info || {};
   const agentName = safeString(info.agent ?? "", "");
-  const sessionId = safeString(info.sessionID ?? "", "");
+  const sessionId = safeString(info.sessionID ?? props.sessionID ?? props.part?.sessionID, "");
   if (agentName && sessionId) {
     return `${sessionId}:${agentName}`;
   }
@@ -358,7 +366,7 @@ const extractSessionId = (event: EventPayload) => {
   if (eventType === "file.edited" || eventType === "file.watcher.updated") {
     return safeString(props.sessionID ?? "", "");
   }
-  return safeString(info.sessionID ?? "", "");
+  return safeString(props.sessionID ?? info.sessionID ?? part.sessionID, "");
 };
 
 const isSessionOnlyOrPartEvent = (event: EventPayload) => {
@@ -390,15 +398,16 @@ const resolveAgentIdsForEvent = (event: EventPayload) => {
     return direct ? [direct] : [];
   }
 
-  const matches = Array.from(officeState.agents.keys()).filter((key) =>
-    key.startsWith(`${sessionId}:`)
-  );
+  const matches = Array.from(officeState.agents.values())
+    .filter((agent) => agent.sessionId === sessionId)
+    .map((agent) => agent.id);
   if (matches.length > 0) {
     return matches;
   }
 
   if (isSessionOnlyOrPartEvent(event)) {
-    return [];
+    return getEventType(event) === "session.created" && agentName
+      ? [`${sessionId}:${agentName}`] : [];
   }
 
   if (agentName) {
@@ -461,12 +470,12 @@ const extractActiveSessionId = (event: EventPayload) => {
   if (eventType === "session.updated" || eventType === "session.created" || eventType === "session.compacted") {
     return safeString(info.id ?? "", "");
   }
-  return safeString(info.sessionID ?? "", "");
+  return safeString(props.sessionID ?? info.sessionID ?? props.part?.sessionID, "");
 };
 
 const applySessionLifecycle = (event: EventPayload) => {
   const type = getEventType(event);
-  if (type === "session.deleted" && event.source === "hermes") {
+  if (type === "session.deleted") {
     const removedSessions = new Set([extractSessionId(event)]);
     let changed = true;
     while (changed) {
@@ -480,9 +489,11 @@ const applySessionLifecycle = (event: EventPayload) => {
     }
     const removedAgents = new Set<string>();
     for (const [id, agent] of officeState.agents) {
-      if (agent.source === "hermes" && removedSessions.has(agent.sessionId)) {
+      if ((agent.source || "opencode") === (event.source || "opencode") && removedSessions.has(agent.sessionId)) {
         removedAgents.add(id);
         officeState.agents.delete(id);
+        activeTools.delete(id);
+        pendingApprovals.delete(id);
         officeState.aliases.delete(id);
       }
     }
@@ -497,24 +508,6 @@ const applySessionLifecycle = (event: EventPayload) => {
     }
     return;
   }
-  if (type === "session.deleted") {
-    const props = event?.properties || {};
-    const sessionId = safeString(props.sessionID ?? "", "");
-    if (sessionId) {
-      officeState.sessions.delete(sessionId);
-      for (const key of officeState.agents.keys()) {
-        if (key.startsWith(`${sessionId}:`) || key === sessionId) {
-          officeState.agents.delete(key);
-          officeState.aliases.delete(key);
-          officeState.interactions.delete(key);
-        }
-      }
-      if (officeState.activeSessionId === sessionId) {
-        officeState.activeSessionId = null;
-      }
-    }
-  }
-
   if (type === "session.idle") {
     const agentIds = resolveAgentIdsForEvent(event);
     agentIds.forEach((agentId) => {
@@ -557,14 +550,17 @@ const getAlias = (agentId: string, sessionId: string) => {
 
 const mapStatusFromEvent = (event: EventPayload) => {
   const type = getEventType(event);
-  if (event.source === "hermes") {
-    if (type === "permission.asked") return "waiting";
-    if (type === "permission.replied") return "thinking";
-  }
-  const status = safeString(event?.properties?.status ?? "", "").toLowerCase();
+  if (type === "permission.asked") return "waiting";
+  if (type === "permission.replied") return "thinking";
+  const props = event.properties || {};
+  const toolPartStatus = props.part?.type === "tool" ? props.part.state?.status : "";
+  if (toolPartStatus === "pending" || toolPartStatus === "running") return "working";
+  if (toolPartStatus === "completed") return "thinking";
+  if (toolPartStatus === "error") return "error";
+  const status = safeString(props.status?.type ?? props.status, "").toLowerCase();
 
   if (status) {
-    return status;
+    return status === "busy" ? "working" : status === "success" ? "thinking" : status;
   }
   if (type === "session.error") {
     return "error";
@@ -595,7 +591,7 @@ const mapStatusFromEvent = (event: EventPayload) => {
 
 const extractParentId = (event: EventPayload) => {
   const props = event?.properties || {};
-  return safeString(props.parentSessionId ?? "", "");
+  return safeString(props.parentSessionId ?? props.info?.parentID ?? props.info?.parentSessionId, "");
 };
 
 const extractSessionInfo = (event: EventPayload) => {
@@ -616,6 +612,7 @@ const extractSessionInfo = (event: EventPayload) => {
   }
   return {
     id: sessionId,
+    parentSessionId: extractParentId(event),
     source: event.source || "opencode",
     profile: safeString(info.profile, ""),
     title: safeString(info.title ?? "", ""),
@@ -638,6 +635,7 @@ const upsertSession = (event: EventPayload) => {
     ? {
       ...existing,
       ...info,
+      parentSessionId: info.parentSessionId || existing.parentSessionId,
       ...(event.source === "hermes" ? {
         profile: info.profile || existing.profile,
         title: info.title || existing.title,
@@ -708,10 +706,88 @@ const isBackgroundSession = (title: string) =>
     title.toLowerCase().includes("looker") ||
     title.toLowerCase().includes("multimodal"));
 
+const updateAgentActivity = (
+  event: EventPayload, agentId: string, now: number,
+  previous?: { activity?: ActivityKind | null; activityUntil?: number }
+) => {
+  const type = getEventType(event);
+  const props = event.properties || {};
+  const part = props.part || {};
+  const isToolPart = type === "message.part.updated" && part.type === "tool";
+  const toolName = safeString(isToolPart ? part.tool : props.tool?.name, "");
+  const explicitCallId = safeString(part.callID ?? props.tool?.id ?? props.tool?.callID ?? props.callID, "");
+  const callId = explicitCallId || toolName;
+  const tools = activeTools.get(agentId) || new Map<string, ActiveTool>();
+  const approvals = pendingApprovals.get(agentId) || new Map<string, PendingApproval>();
+  const starting = type === "tool.execute.before" ||
+    (isToolPart && (part.state?.status === "running" || part.state?.status === "pending"));
+  const finished = type === "tool.execute.after" ||
+    (isToolPart && (part.state?.status === "completed" || part.state?.status === "error"));
+  const ended = type === "session.idle" || type === "session.error" ||
+    (type === "session.status" && props.status?.type === "idle");
+  if (ended) {
+    tools.clear();
+    approvals.clear();
+  }
+  if (starting && toolName) {
+    tools.delete(callId);
+    tools.set(callId, { name: toolName, activity: getToolActivity(toolName) });
+  }
+  if (finished) {
+    if (callId) tools.delete(callId);
+    else tools.clear();
+    for (const [id, approval] of approvals) {
+      const matches = approval.callId && explicitCallId
+        ? approval.callId === explicitCallId
+        : !toolName || approval.tool === toolName || !approval.tool;
+      if (matches) {
+        approvals.delete(id);
+        if (toolName || explicitCallId) break;
+      }
+    }
+  }
+  if (type === "permission.asked") {
+    const approvalTool = safeString(props.permission?.tool, "") ||
+      safeString(props.permission?.action, "") || safeString(props.permission, "") ||
+      safeString(props.tool?.name, "");
+    const requestId = safeString(props.id ?? props.permission?.id, "");
+    const id = requestId || approvalTool || "approval";
+    if (!approvals.has(id) && (approvalTool || requestId || !approvals.size)) {
+      approvals.set(id, { tool: approvalTool, callId: explicitCallId, requestedAt: now });
+    }
+  }
+  if (type === "permission.replied") {
+    const id = safeString(props.requestID ?? props.id ?? props.permission?.id, "");
+    if (id) approvals.delete(id);
+    else approvals.clear();
+  }
+  if (tools.size) activeTools.set(agentId, tools);
+  else activeTools.delete(agentId);
+  if (approvals.size) pendingApprovals.set(agentId, approvals);
+  else pendingApprovals.delete(agentId);
+  const currentTool = Array.from(tools.values()).at(-1);
+  const approvalEntry = Array.from(approvals.entries()).at(-1);
+  const approval = approvalEntry?.[1];
+  const fileEdited = type === "file.edited" || type === "file.watcher.updated";
+  const transientActivity = fileEdited ? "writing"
+    : type === "command.executed" ? "terminal"
+    : finished ? getToolActivity(toolName) : null;
+  return {
+    activity: ended ? null : currentTool ? currentTool.activity : transientActivity ||
+      ((previous?.activityUntil || 0) > now ? previous?.activity : null),
+    activityUntil: currentTool || ended ? 0 : transientActivity ? now + 1400 : previous?.activityUntil || 0,
+    toolName: currentTool?.name || "",
+    approvalTool: approval?.tool || "",
+    approvalRequestId: approvalEntry?.[0] || "",
+    approvalRequestedAt: approval?.requestedAt || 0,
+  };
+};
+
 const pruneAgents = () => {
   const now = Date.now();
   for (const [key, agent] of officeState.agents.entries()) {
-    if (agent.source === "hermes" && (agent.status === "waiting" || agent.status === "error")) {
+    if (pendingApprovals.has(key) || activeTools.has(key) ||
+        (agent.source === "hermes" && agent.status === "error")) {
       continue;
     }
     const lastActivity = agent.lastActivityAt || agent.lastMessageAt || 0;
@@ -743,6 +819,8 @@ const pruneAgents = () => {
       now - agent.updatedAt > 3000
     ) {
       officeState.agents.delete(key);
+      activeTools.delete(key);
+      pendingApprovals.delete(key);
       officeState.aliases.delete(key);
       officeState.interactions.delete(key);
     }
@@ -781,7 +859,7 @@ const upsertAgentFromEvent = (event: EventPayload) => {
   if (cleanedIds.length === 0) {
     return null;
   }
-  if (isSessionOnlyOrPartEvent(event) && event.source !== "hermes") {
+  if (isSessionOnlyOrPartEvent(event) && event.source !== "hermes" && getEventType(event) !== "session.created") {
     const hasAgentMatch = cleanedIds.some((id) => officeState.agents.has(id));
     if (!hasAgentMatch) {
       return null;
@@ -815,9 +893,11 @@ const upsertAgentFromEvent = (event: EventPayload) => {
     const name = event.source === "hermes"
       ? safeString(props.info?.agent, existing?.name || "Hermes")
       : isSessionOnlyOrPartEvent(event)
-      ? existing?.name || agentId
+      ? existing?.name || extractAgentName(event, agentId)
       : extractAgentName(event, agentId);
     const nextSessionId = rawSessionId || existing?.sessionId || "";
+    const parentSessionId = extractParentId(event) ||
+      officeState.sessions.get(nextSessionId)?.parentSessionId || existing?.parentSessionId || "";
     const alias = getAlias(agentId, nextSessionId);
     const resolvedModel = modelId || model;
     const nextModel =
@@ -843,6 +923,7 @@ const upsertAgentFromEvent = (event: EventPayload) => {
       eventSource === "hermes" ? safeString(props.preview, "") : messageSnippet
     );
     const now = Date.now();
+    const activityState = updateAgentActivity(event, agentId, now, existing);
     const isFileEditEvent = eventType === "file.edited" || eventType === "file.watcher.updated";
     const isActivityEvent =
       (eventSource === "hermes" && (
@@ -852,6 +933,10 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         eventType === "permission.replied"
       )) ||
       eventType === "tool.execute.before" ||
+      eventType === "tool.execute.after" ||
+      eventType === "permission.asked" ||
+      eventType === "permission.replied" ||
+      eventType === "command.executed" ||
       isFileEditEvent ||
       isPartUpdate ||
       (eventType === "message.updated" && hasMessageUpdate);
@@ -864,10 +949,13 @@ const upsertAgentFromEvent = (event: EventPayload) => {
     const nextActivityAt = isActivityEvent
       ? now
       : existing?.lastActivityAt || 0;
-    const nextStatus =
-      event.source !== "hermes" && existing?.status === "idle" && !isActivityEvent && status !== "error"
-        ? "idle"
-        : status;
+    let nextStatus = status;
+    if (activityState.approvalRequestedAt) {
+      nextStatus = "waiting";
+    } else if (eventType !== "permission.replied" && status !== "error") {
+      if (activeTools.has(agentId)) nextStatus = "working";
+      else if (event.source !== "hermes" && existing?.status === "idle" && !isActivityEvent) nextStatus = "idle";
+    }
 
     if (existing) {
       officeState.agents.set(agentId, {
@@ -880,11 +968,12 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         sessionTitle: nextSessionTitle,
         isBackground: nextIsBackground,
         status: nextStatus,
+        ...activityState,
+        parentSessionId,
+        role: safeString(props.info?.role, existing.role || ""),
         source: existing.source || eventSource,
         ...(eventSource === "hermes" ? {
           profile: safeString(props.info?.profile, existing.profile || ""),
-          parentSessionId: props.parentSessionId || existing.parentSessionId || "",
-          role: props.info?.role || existing.role || "",
         } : {}),
         lastEventType: event?.type || existing.lastEventType,
         lastMessageSnippet: trimmedSnippet,
@@ -908,12 +997,13 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         sessionId: nextSessionId,
         sessionTitle: nextSessionTitle,
         isBackground: nextIsBackground,
-        status,
+        status: nextStatus,
+        ...activityState,
+        parentSessionId,
+        role: safeString(props.info?.role, ""),
         source: eventSource,
         ...(eventSource === "hermes" ? {
           profile: safeString(props.info?.profile, ""),
-          parentSessionId: props.parentSessionId || "",
-          role: props.info?.role || "",
         } : {}),
         lastEventType: event?.type || "unknown",
         lastMessageSnippet: trimmedSnippet,
@@ -929,6 +1019,8 @@ const upsertAgentFromEvent = (event: EventPayload) => {
         desk: assignDesk(),
       });
     }
+    const session = officeState.sessions.get(nextSessionId);
+    if (session) officeState.sessions.set(nextSessionId, { ...session, status: nextStatus });
   });
 
   return primaryId;
@@ -1073,12 +1165,13 @@ app.post("/events", (req: any, res: any) => {
   }
 
   applySessionLifecycle(event);
-  const agentId = event.source === "hermes" && (eventType === "session.deleted" || eventType === "todo.updated")
+  const agentId = eventType === "session.deleted" || (event.source === "hermes" && eventType === "todo.updated")
     ? null : upsertAgentFromEvent(event);
   updateBossMessage(event);
-  const parentId = extractParentId(event);
+  const parentId = extractParentId(event) || (agentId ? officeState.agents.get(agentId)?.parentSessionId : "");
   if (agentId && parentId) {
-    setInteraction(event.source === "hermes" ? `${parentId}:agent` : parentId, agentId);
+    const parentAgent = Array.from(officeState.agents.values()).find((agent) => agent.sessionId === parentId);
+    if (parentAgent) setInteraction(parentAgent.id, agentId);
   }
 
   broadcast({ type: "event", event });

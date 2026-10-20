@@ -1,5 +1,6 @@
 import type { Agent, SessionInfo } from "../useOfficeState";
 import { formatSessionName, getSessionContext, getSessionDisplayId } from "../lib/session";
+import { ACTIVITY_LABELS, getAgentActivity, isAwaitingApproval } from "../lib/activity";
 
 type AgentPanelProps = {
   selectedAgent: Agent | null;
@@ -11,6 +12,7 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
     ? sessions.find((s) => s.id === selectedAgent.sessionId)
     : null;
   const repoName = agentSession ? getSessionContext(agentSession) : "";
+  const activity = selectedAgent ? getAgentActivity(selectedAgent, Date.now()) : null;
 
   return (
     <div className="data-panel">
@@ -30,7 +32,9 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
                   ? `${selectedAgent.alias || selectedAgent.name || "Agent"} · ${repoName}`
                   : selectedAgent.alias || selectedAgent.name || "Unknown Agent"}
               </span>
-              <span className="text-[9px] text-slate-400 uppercase">{selectedAgent.role || "Operative"}</span>
+              <span className="text-[9px] text-slate-400 uppercase">
+                {selectedAgent.parentSessionId ? `Helper · ${selectedAgent.role || selectedAgent.name || "Subagent"}` : selectedAgent.role || "Operative"}
+              </span>
             </div>
           </div>
 
@@ -41,10 +45,19 @@ const AgentPanel = ({ selectedAgent, sessions }: AgentPanelProps) => {
             </div>
             <div className="stat-box">
               <span className="stat-label">Status</span>
-              <span className={`stat-value uppercase ${selectedAgent.status === 'working' ? 'text-amber-400' : 'text-slate-400'}`}>
+              <span className={`stat-value uppercase ${isAwaitingApproval(selectedAgent) ? 'text-red-700' : selectedAgent.status === 'working' ? 'text-amber-400' : 'text-slate-400'}`}>
                 {selectedAgent.status || "IDLE"}
               </span>
             </div>
+            {activity && (
+              <div className="stat-box col-span-2">
+                <span className="stat-label">Activity</span>
+                <span className="stat-value">{ACTIVITY_LABELS[activity]}</span>
+                {(selectedAgent.approvalTool || selectedAgent.toolName) && (
+                  <span className="text-[9px] break-all">{selectedAgent.approvalTool || selectedAgent.toolName}</span>
+                )}
+              </div>
+            )}
             <div className="stat-box col-span-2">
               <span className="stat-label">Provider</span>
               <span className="stat-value">{selectedAgent.provider || "Unknown"}</span>

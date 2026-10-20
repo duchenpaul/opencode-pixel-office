@@ -10,6 +10,18 @@ A pixel-art office visualization for AI assistants. Works with **OpenCode**, **C
 
 - **Multi-provider Support**: Works with OpenCode, Claude Code CLI, and Hermes
 - **Live Visualization**: Real-time pixel-art office showing agent activity
+- **Activity Animations**: Tool-aware typing for file writes and edits, an open
+  book for reads and file searches, a browser for web research, and a flickering
+  green monitor for terminal commands. Active tools keep their animation until
+  they finish; quick operations remain visible briefly afterward.
+- **Helper Subagents**: Delegated agents wear gold collars and gold name tags,
+  retaining their own session names and provider-specific roles.
+- **Approval Alerts**: A persistent red exclamation mark and speech bubble appear
+  while an agent awaits command approval or user input. The approval list covers
+  all provider tabs; click a request to select its agent. Approve or deny in the
+  original assistant, not in the dashboard. Enable **Approval chimes** for a
+  preview tone and a chime on each new request. Sound is off on each page load,
+  requires a browser interaction, and does not repeat for an unchanged request.
 - **Tabbed Interface**: Defaults to the OpenCode, Claude, or Hermes view with the largest badge count. Manual selections stay active until reload; ties use that tab order.
 - **Mobile Ready**: Connect via local network + QR code
 - **Session Tracking**: Monitor multiple sessions across different repos

@@ -17,6 +17,7 @@ import { MessageBubble } from "./components/pixi/MessageBubble";
 import type { MessageBubbleData } from "./components/pixi/MessageBubble";
 import { findPath } from "./pathfinding";
 import { drawRoundedRect } from "./components/pixi/drawRoundedRect";
+import { getAgentActivity, isAwaitingApproval } from "./lib/activity";
 
 settings.SCALE_MODE = SCALE_MODES.NEAREST;
 settings.ROUND_PIXELS = true;
@@ -335,25 +336,6 @@ const pickTagColors = (sessionId?: string): [number, number] => {
     hash = (hash * 31 + sessionId.charCodeAt(i)) % 997;
   }
   return TAG_COLORS[hash % TAG_COLORS.length];
-};
-
-const statusBubbleText = (status: string) => {
-  switch (status) {
-    case "waiting":
-      return "awaiting approval";
-    case "idle":
-      return "idle";
-    case "thinking":
-      return "thinking";
-    case "planning":
-      return "planning";
-    case "working":
-      return "working";
-    case "error":
-      return "error";
-    default:
-      return "working";
-  }
 };
 
 const wrapLines = (
@@ -819,6 +801,14 @@ const SceneLayer = ({
         fontFamily: "Courier New",
         fontSize: 10,
       }),
+    []
+  );
+  const helperAliasStyle = useMemo(
+    () => new TextStyle({ fill: 0xffe49a, fontFamily: "Courier New", fontSize: 10 }),
+    []
+  );
+  const approvalStyle = useMemo(
+    () => new TextStyle({ fill: 0x991b1b, fontFamily: "Courier New", fontSize: 9 }),
     []
   );
   const statusStyle = useMemo(
@@ -1413,7 +1403,9 @@ const SceneLayer = ({
           const aliasLabel = (agent.alias || agent.name || agent.id || "Agent")
             .slice(0, 10)
             .toUpperCase();
-          const [tagFill, tagStroke] = pickTagColors(agent.sessionId);
+          const isHelper = Boolean(agent.parentSessionId);
+          const [tagFill, tagStroke] = isHelper
+            ? [0x5c400e, 0xeabf42] : pickTagColors(agent.sessionId);
           const messageEventAt =
             agent.lastEventType?.startsWith("message.") ? agent.lastEventAt || 0 : 0;
           const messageTimestamp = agent.lastMessageAt || messageEventAt || 0;
@@ -1422,15 +1414,14 @@ const SceneLayer = ({
           const isStreaming =
             agent.lastStreamingAt &&
             Date.now() - agent.lastStreamingAt < TYPING_TTL_MS;
-          const statusText = statusBubbleText(agent.status || "working");
-          const awaitingApproval = agent.source === "hermes" && agent.status === "waiting";
+          const awaitingApproval = !sprite.exiting && isAwaitingApproval(agent);
           const snippet = agent.lastMessageSnippet || "";
           const showGoodbye = Boolean(sprite.goodbyeUntil && Date.now() < sprite.goodbyeUntil);
           const goodbyeText = "bye";
           const messageText = showGoodbye
             ? goodbyeText
             : awaitingApproval
-              ? statusText
+              ? `Awaiting approval${agent.approvalTool ? `: ${agent.approvalTool}` : ""}`
             : isStreaming
               ? ".".repeat(Math.max(1, Math.floor(time / 250) % 4))
               : snippet;
@@ -1457,9 +1448,10 @@ const SceneLayer = ({
             eventBadgeColor !== undefined;
           const isPermissionEvent = awaitingApproval || (hasRecentEvent && eventType === "permission.asked");
           const isWaitingForInput = hasRecentEvent && eventType === "tui.toast.show";
+          const activity = sprite.exiting ? null : getAgentActivity(agent, now);
           const activityEmoji =
             isPermissionEvent
-              ? "❓"
+              ? "!"
               : isWaitingForInput
                 ? "⏳"
                 : hasRecentEdit
@@ -1469,7 +1461,7 @@ const SceneLayer = ({
                     : agent.status === "working"
                       ? "🛠️"
                       : "";
-          const showActivity = Boolean(activityEmoji);
+          const showActivity = !sprite.exiting && Boolean(activity || activityEmoji);
           const messageLines = wrapLines(
             messageText,
             MESSAGE_MAX_WIDTH,
@@ -1487,15 +1479,16 @@ const SceneLayer = ({
             MESSAGE_PADDING * 2;
           const lineHeight = (Number(bubbleStyle.fontSize) || 9) + 2;
           const messageHeight = messageLines.length * lineHeight + MESSAGE_PADDING * 2;
+          const activityBubbleSize = activity ? 30 : 18;
+          const activityBubbleY = y - activityBubbleSize - 14;
           const messageBubbleX = sprite.x - messageBubbleWidth / 2;
-          const messageBubbleY = y - 56 + motion - (messageLines.length - 1) * 6;
+          const messageBubbleY = activityBubbleY - messageHeight - 6;
           const messageTextX = messageBubbleX + MESSAGE_PADDING;
           const messageTextY = messageBubbleY + MESSAGE_PADDING;
           const labelPaddingX = 4;
           const chipHeight = 12;
           const chipGap = 4;
           const labelY = y + 34 + motion;
-          const activityBubbleSize = 18;
           const activityBubbleX = sprite.x - activityBubbleSize / 2;
           const messageBubble: MessageBubbleData = {
             show: Boolean(showGoodbye || awaitingApproval || (agent.lastMessageSnippet && isMessageFresh)),
@@ -1506,17 +1499,15 @@ const SceneLayer = ({
             textX: messageTextX,
             textY: messageTextY,
             lines: messageLines,
+            approval: awaitingApproval,
           };
-          const statusY = messageBubble.show
-            ? messageBubbleY + messageHeight + 4
-            : y - 28 + motion;
-          const activityBubbleY = statusY;
           const activityBubble: ActivityBubbleData = {
             show: showActivity,
             x: activityBubbleX,
             y: activityBubbleY,
             size: activityBubbleSize,
             emoji: activityEmoji,
+            activity,
             textX: activityBubbleX + 3,
             textY: activityBubbleY + 1,
           };
@@ -1613,33 +1604,6 @@ const SceneLayer = ({
                     graphics.lineStyle(0, 0, 0);
                   }
 
-                  if (messageBubble.show) {
-                    drawRoundedRect(
-                      graphics,
-                      messageBubble.x,
-                      messageBubble.y,
-                      messageBubble.width,
-                      messageBubble.height,
-                      4,
-                      0xf1fff3,
-                      0x3a5b3c,
-                      1.5
-                    );
-                  }
-
-                  if (activityBubble.show) {
-                    drawRoundedRect(
-                      graphics,
-                      activityBubble.x,
-                      activityBubble.y,
-                      activityBubble.size,
-                      activityBubble.size,
-                      6,
-                      0xf1f3ff,
-                      0x5a6aa0,
-                      1
-                    );
-                  }
                 }}
               />
               {texture && (
@@ -1651,15 +1615,28 @@ const SceneLayer = ({
                   scale={{ x: flipX * 2, y: 2 }}
                 />
               )}
+              {isHelper && (
+                <Graphics
+                  draw={(graphics: PixiGraphics) => {
+                    graphics.clear();
+                    graphics.beginFill(0xeabf42);
+                    graphics.drawRect(sprite.x - 8, sprite.y + (texture ? 4 : -16), 16, 3);
+                    graphics.endFill();
+                    graphics.beginFill(0xffe49a);
+                    graphics.drawRect(sprite.x - 2, sprite.y + (texture ? 7 : -13), 4, 4);
+                    graphics.endFill();
+                  }}
+                />
+              )}
               <Text
                 text={aliasLabel}
                 anchor={0.5}
                 x={x + 8}
                 y={y + 30 + motion}
-                style={aliasStyle}
+                style={isHelper ? helperAliasStyle : aliasStyle}
               />
-              <MessageBubble bubble={messageBubble} style={bubbleStyle} />
-              <ActivityBubble bubble={activityBubble} style={activityStyle} />
+              <MessageBubble bubble={messageBubble} style={awaitingApproval ? approvalStyle : bubbleStyle} />
+              <ActivityBubble bubble={activityBubble} style={activityStyle} time={time} />
             </Container>
           );
         })

@@ -47,15 +47,20 @@ const mapHookToEvent = (input) => {
   const prompt = input.prompt || input.user_prompt || "";
   const permission = input.permission || {};
   const message = input.message || "";
+  const helperId = input.agent_id || input.subagent_id || "";
+  const helperType = input.agent_type || input.subagent_type || "Subagent";
+  const isHelper = Boolean(helperId);
+  const effectiveSessionId = isHelper ? `${sessionId}:subagent:${helperId}` : sessionId;
 
   const projectName = getProjectName(cwd);
   const agentId = sessionId || `claude-${Date.now()}`;
   const modelId = getModelFromEnv();
 
   const info = {
-    id: agentId,
-    sessionID: sessionId,
-    agent: "Claude",
+    id: effectiveSessionId || agentId,
+    sessionID: effectiveSessionId,
+    agent: isHelper ? helperType : "Claude",
+    ...(isHelper ? { role: helperType } : {}),
     title: projectName,
     directory: cwd,
     model: {
@@ -84,7 +89,7 @@ const mapHookToEvent = (input) => {
       event = {
         type: "session.deleted",
         properties: {
-          sessionID: sessionId,
+          sessionID: effectiveSessionId,
           info,
         },
       };
@@ -110,7 +115,7 @@ const mapHookToEvent = (input) => {
         type: "tool.execute.before",
         properties: {
           info,
-          tool: { name: toolName, input: toolInput },
+          tool: { id: input.tool_use_id, name: toolName, input: toolInput },
         },
       };
       break;
@@ -120,7 +125,7 @@ const mapHookToEvent = (input) => {
         type: "tool.execute.after",
         properties: {
           info,
-          tool: { name: toolName, input: toolInput, output: toolOutput },
+          tool: { id: input.tool_use_id, name: toolName, input: toolInput, output: toolOutput },
           status: "success",
         },
       };
@@ -131,7 +136,7 @@ const mapHookToEvent = (input) => {
         type: "tool.execute.after",
         properties: {
           info,
-          tool: { name: toolName, input: toolInput, output: toolOutput },
+          tool: { id: input.tool_use_id, name: toolName, input: toolInput, output: toolOutput },
           status: "error",
         },
       };
@@ -143,14 +148,15 @@ const mapHookToEvent = (input) => {
         properties: {
           info,
           permission: { ...permission, tool: toolName },
+          tool: { id: input.tool_use_id, name: toolName },
         },
       };
       break;
 
     case "Notification":
       event = {
-        type: "tui.toast.show",
-        properties: { info, message },
+        type: input.notification_type === "permission_prompt" ? "permission.asked" : "tui.toast.show",
+        properties: { info, message, permission: { tool: toolName } },
       };
       break;
 
@@ -165,7 +171,7 @@ const mapHookToEvent = (input) => {
       event = {
         type: "session.status",
         properties: {
-          sessionID: sessionId,
+          sessionID: effectiveSessionId,
           info,
           status: { type: "idle" },
         },
@@ -173,13 +179,16 @@ const mapHookToEvent = (input) => {
       break;
 
     case "SubagentStart":
+      if (!helperId) {
+        console.error("[PixelOffice] SubagentStart missing agent_id");
+        return null;
+      }
       event = {
-        type: "session.updated",
+        type: "session.created",
         properties: {
           info: {
             ...info,
-            agent: input.subagent_type || "Subagent",
-            title: `${projectName} (${input.subagent_type || "Task"})`,
+            title: `${projectName} (${helperType})`,
           },
           parentSessionId: sessionId,
         },
@@ -187,10 +196,14 @@ const mapHookToEvent = (input) => {
       break;
 
     case "SubagentStop":
+      if (!helperId) {
+        console.error("[PixelOffice] SubagentStop missing agent_id");
+        return null;
+      }
       event = {
-        type: "session.idle",
+        type: "session.deleted",
         properties: {
-          sessionID: input.subagent_id || sessionId,
+          sessionID: effectiveSessionId,
           info,
         },
       };
@@ -203,6 +216,7 @@ const mapHookToEvent = (input) => {
   // Add source tag to identify this is from Claude Code
   if (event) {
     event.source = "claude";
+    if (isHelper) event.properties.parentSessionId = sessionId;
   }
 
   return event;

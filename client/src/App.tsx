@@ -7,6 +7,7 @@ import { TodoPanel } from "./components/TodoPanel";
 import { useOfficeState } from "./useOfficeState";
 import type { OfficeSource } from "./useOfficeState";
 import { formatSessionName } from "./lib/session";
+import { ApprovalAlerts } from "./components/ApprovalAlerts";
 
 type OfficeTab = OfficeSource;
 
@@ -174,6 +175,15 @@ const App = () => {
           )}
         </div>
       </header>
+
+      <ApprovalAlerts
+        agents={agents}
+        onSelectAgent={(agent) => {
+          setSelectedTab(agent.source || "opencode");
+          setSelectedAgentId(agent.id);
+          if (agent.sessionId) setSelectedSessionId(agent.sessionId);
+        }}
+      />
 
       <main>
         <ScreenFrame

@@ -21,6 +21,7 @@ const serverFixture = (t) => {
   const dir = fixture(t);
   fs.mkdirSync(path.join(dir, "server"));
   fs.copyFileSync(path.join(root, "server/index.ts"), path.join(dir, "server/index.ts"));
+  fs.copyFileSync(path.join(root, "server/activity.ts"), path.join(dir, "server/activity.ts"));
   fs.symlinkSync(path.join(root, "node_modules"), path.join(dir, "node_modules"), "dir");
   return dir;
 };

@@ -41,24 +41,186 @@ const startServer = async (t) => {
       socket.close();
     }
   };
-  const send = async (type, sid, extra = {}, source = "hermes") => {
+  const post = async (event) => {
     const response = await fetch(`${base}/events`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source, type,
-        properties: {
-          sessionID: sid,
-          info: { id: sid, sessionID: sid, agent: source === "hermes" ? "Hermes" : source },
-          ...extra,
-        },
-      }),
+      body: JSON.stringify(event),
     });
     assert.equal(response.status, 202);
     return snapshot();
   };
-  return { send, snapshot, base };
+  const send = (type, sid, extra = {}, source = "hermes") => post({
+    source, type,
+    properties: {
+      sessionID: sid,
+      info: { id: sid, sessionID: sid, agent: source === "hermes" ? "Hermes" : source },
+      ...extra,
+    },
+  });
+  return { send, snapshot, base, post };
 };
+
+test("tool animations track activity, concurrent calls, and completion for every provider", async (t) => {
+  const { send } = await startServer(t);
+  for (const source of ["opencode", "claude", "hermes"]) {
+    const sid = `activity-${source}`;
+    let state = await send("session.created", sid, {}, source);
+    const id = state.agents.find((agent) => agent.source === source).id;
+    const agent = (state) => state.agents.find((a) => a.id === id);
+    for (const [name, activity] of [["Write", "writing"], ["Read", "reading"], ["WebSearch", "research"], ["Bash", "terminal"]]) {
+      state = await send("tool.execute.before", sid, { tool: { id: name, name } }, source);
+      assert.equal(agent(state).activity, activity);
+      assert.equal(agent(state).toolName, name);
+      state = await send("tool.execute.after", sid, { tool: { id: name, name } }, source);
+      assert.equal(agent(state).toolName, "");
+      assert.equal(agent(state).activity, activity);
+      assert.ok(agent(state).activityUntil > Date.now());
+    }
+    await send("tool.execute.before", sid, { tool: { id: "one", name: "Read" } }, source);
+    await send("tool.execute.before", sid, { tool: { id: "two", name: "Bash" } }, source);
+    state = await send("tool.execute.after", sid, { tool: { id: "one", name: "Read" } }, source);
+    assert.equal(agent(state).activity, "terminal");
+    assert.equal(agent(state).toolName, "Bash");
+    state = await send("session.idle", sid, {}, source);
+    assert.equal(agent(state).activity, null);
+  }
+});
+
+test("native OpenCode tool parts and permission payloads update the correct session", async (t) => {
+  const { send, post } = await startServer(t);
+  await send("session.created", "ses_native", {}, "opencode");
+  const part = { type: "tool", sessionID: "ses_native", callID: "call-1", tool: "bash" };
+  let state = await post({ type: "message.part.updated", properties: { part: { ...part, state: { status: "running" } } } });
+  const agent = () => state.agents.find((a) => a.sessionId === "ses_native");
+  assert.equal(agent().activity, "terminal");
+  state = await post({ type: "permission.asked", properties: { sessionID: "ses_native", id: "approval-1", permission: "bash" } });
+  assert.equal(agent().status, "waiting");
+  assert.equal(agent().approvalTool, "bash");
+  const approvalAt = agent().approvalRequestedAt;
+  state = await post({ type: "message.part.updated", properties: { part: { ...part, state: { status: "running" } } } });
+  assert.equal(agent().status, "waiting");
+  assert.equal(agent().approvalRequestedAt, approvalAt);
+  state = await post({ type: "permission.replied", properties: { sessionID: "ses_native", requestID: "approval-1" } });
+  assert.notEqual(agent().status, "waiting");
+  state = await post({ type: "message.part.updated", properties: { part: { ...part, state: { status: "completed" } } } });
+  assert.equal(agent().toolName, "");
+  assert.equal(agent().status, "thinking");
+});
+
+test("replying to one approval does not clear other pending requests", async (t) => {
+  const { send } = await startServer(t);
+  const sid = "parallel-approvals";
+  await send("session.created", sid);
+  let state = await send("permission.asked", sid, { id: "first", permission: { tool: "terminal" } });
+  const firstTimestamp = state.agents[0].approvalRequestedAt;
+  state = await send("permission.asked", sid, { id: "second", permission: { tool: "write_file" } });
+  assert.equal(state.agents[0].approvalTool, "write_file");
+  state = await send("permission.replied", sid, { requestID: "second" });
+  assert.equal(state.agents[0].status, "waiting");
+  assert.equal(state.agents[0].approvalTool, "terminal");
+  assert.equal(state.agents[0].approvalRequestedAt, firstTimestamp);
+  state = await send("permission.replied", sid, { requestID: "first" });
+  assert.equal(state.agents[0].status, "thinking");
+});
+
+test("a tool completion clears only its own approval when commands run concurrently", async (t) => {
+  const { send } = await startServer(t);
+  const sid = "concurrent-commands";
+  for (const id of ["first", "second"]) {
+    await send("tool.execute.before", sid, { tool: { id, name: "Bash" } });
+    await send("permission.asked", sid, {
+      id: `approval-${id}`, permission: { tool: "Bash" }, tool: { id, name: "Bash" },
+    });
+  }
+  let state = await send("tool.execute.after", sid, { tool: { id: "first", name: "Bash" } });
+  assert.equal(state.agents[0].status, "waiting");
+  assert.equal(state.agents[0].approvalRequestId, "approval-second");
+  assert.equal(state.agents[0].toolName, "Bash");
+  state = await send("tool.execute.after", sid, { tool: { id: "second", name: "Bash" } });
+  assert.equal(state.agents[0].status, "thinking");
+  assert.equal(state.agents[0].approvalRequestedAt, 0);
+});
+
+test("running tools and pending approvals do not expire after the idle timeout", async (t) => {
+  const { send, snapshot } = await startServer(t);
+  for (const source of ["opencode", "claude", "hermes"]) {
+    await send("tool.execute.before", `${source}-long`, { tool: { name: "Bash" } }, source);
+    await send("tool.execute.before", `${source}-approval`, { tool: { name: "Bash" } }, source);
+    await send("permission.asked", `${source}-approval`, { permission: { tool: "Bash" } }, source);
+  }
+  await delay(6200);
+  let state = await snapshot();
+  assert.equal(state.agents.filter((agent) => agent.status === "waiting").length, 3);
+  assert.equal(state.agents.filter((agent) => agent.status === "working").length, 3);
+  for (const source of ["opencode", "claude", "hermes"]) {
+    state = await send("message.updated", `${source}-approval`, {}, source);
+    const waiting = state.agents.find((agent) => agent.source === source && agent.status === "waiting");
+    assert.ok(waiting);
+    const timestamp = waiting.approvalRequestedAt;
+    state = await send("permission.asked", `${source}-approval`, { permission: { tool: "Bash" } }, source);
+    assert.equal(state.agents.find((agent) => agent.id === waiting.id).approvalRequestedAt, timestamp);
+    state = await send("tool.execute.after", `${source}-approval`, { tool: { name: "Bash" }, status: "error" }, source);
+    assert.equal(state.agents.find((agent) => agent.id === waiting.id).status, "error");
+  }
+});
+
+test("Claude hooks create independent helpers and clear approval on tool completion", async (t) => {
+  const { base, snapshot } = await startServer(t);
+  const hook = async (hook_event_name, extra = {}) => {
+    const child = spawn(process.execPath, ["bin/claude-code-hook.js"], {
+      cwd: new URL("..", import.meta.url),
+      env: { ...process.env, PIXEL_OFFICE_URL: `${base}/events` },
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    let error = "";
+    child.stderr.on("data", (data) => { error += data; });
+    child.stdin.end(JSON.stringify({ hook_event_name, session_id: "claude-main", cwd: "/work/repo", ...extra }));
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0, error);
+    return snapshot();
+  };
+  let state = await hook("SessionStart");
+  const parent = state.agents[0];
+  state = await hook("SubagentStart", { agent_id: "helper-1", agent_type: "research" });
+  const helper = state.agents.find((agent) => agent.parentSessionId);
+  assert.ok(helper);
+  assert.equal(helper.parentSessionId, parent.sessionId);
+  assert.equal(helper.name, "research");
+  assert.equal(helper.role, "research");
+  assert.notEqual(helper.alias, parent.alias);
+  state = await hook("PreToolUse", { tool_name: "Bash", tool_use_id: "parent-command" });
+  assert.equal(state.agents.find((agent) => agent.id === helper.id).toolName, "");
+  state = await hook("PreToolUse", { agent_id: "helper-1", agent_type: "research", tool_name: "WebSearch", tool_use_id: "search" });
+  assert.equal(state.agents.find((agent) => agent.id === helper.id).activity, "research");
+  assert.equal(state.agents.find((agent) => agent.id === parent.id).activity, "terminal");
+  state = await hook("PermissionRequest", { tool_name: "Bash" });
+  assert.equal(state.agents.find((agent) => agent.id === parent.id).status, "waiting");
+  const approvalAt = state.agents.find((agent) => agent.id === parent.id).approvalRequestedAt;
+  state = await hook("Notification", { notification_type: "permission_prompt" });
+  assert.equal(state.agents.find((agent) => agent.id === parent.id).approvalRequestedAt, approvalAt);
+  state = await hook("PostToolUse", { tool_name: "Bash", tool_use_id: "parent-command" });
+  assert.equal(state.agents.find((agent) => agent.id === parent.id).status, "thinking");
+  state = await hook("SubagentStop", { agent_id: "helper-1", agent_type: "research" });
+  assert.equal(state.agents.length, 1);
+  assert.equal(state.agents[0].id, parent.id);
+  assert.equal(state.sessions.length, 1);
+  state = await hook("SessionEnd");
+  assert.equal(state.agents.length, 0);
+});
+
+test("OpenCode parent metadata marks helpers without changing their parent agent", async (t) => {
+  const { send, post } = await startServer(t);
+  await send("session.created", "oc-parent", {}, "opencode");
+  await post({ type: "session.created", properties: { info: { id: "oc-child", parentID: "oc-parent" } } });
+  let state = await post({ type: "message.updated", properties: { info: { id: "msg", sessionID: "oc-child", agent: "explore" } } });
+  const helper = state.agents.find((agent) => agent.sessionId === "oc-child");
+  assert.equal(helper.parentSessionId, "oc-parent");
+  assert.ok(state.interactions.length);
+  state = await send("session.deleted", "oc-parent", {}, "opencode");
+  assert.equal(state.agents.length, 0);
+  assert.equal(state.sessions.length, 0);
+});
 
 test("Hermes lifecycle is isolated, visible immediately, and cleaned up completely", async (t) => {
   const { send, snapshot, base } = await startServer(t);
