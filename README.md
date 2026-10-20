@@ -148,8 +148,7 @@ does not block Hermes. Delivery failures are logged, not replayed.
 ### Profiles and connection settings
 
 By default, the plugin is installed in
-`~/.hermes/plugins/opencode-pixel-office/`. To observe an existing named profile
-and make it the dashboard's initial selection:
+`~/.hermes/plugins/opencode-pixel-office/`. To observe an existing named profile:
 
 ```bash
 opencode-pixel-office install --hermes-profile dev-team
@@ -163,17 +162,16 @@ This installs into `~/.hermes/profiles/dev-team/plugins/opencode-pixel-office/`
 already exist; setup does not create it or change Hermes's sticky default.
 Use the same `--hermes-profile <name>` with `status` and `uninstall`.
 
-The **Hermes profile** dropdown filters agents, sessions, quests, and Hermes
-approval alerts. It defaults to `dev-team`, or the last profile explicitly
-selected during installation. Each plugin reports the profile names returned
-by Hermes's profile API when it loads, including inactive profiles. Profiles
-seen in incoming events also appear. Restart Hermes after adding a profile to
-refresh discovery. Switching the dropdown changes only the dashboard; it does
-not start Hermes, change its default, or install a plugin in another profile.
-The **All profiles** option shows every observed Hermes session. Events without
-profile metadata appear under **Unspecified profile**, never as `dev-team`.
-An empty view means no live events have arrived for that profile, not that its
-sessions are idle.
+The read-only **Active Hermes profile** label comes from the running Hermes
+process's profile API when the plugin loads and from subsequent session events.
+There is no hardcoded or installation-time dashboard default, and inactive
+profiles are not collected. Before Hermes reports a profile, the label shows
+**Awaiting Hermes**; events without profile metadata show **Unspecified profile**.
+If multiple Hermes profiles are running, the dashboard follows the profile
+most recently reporting runtime activity, keeping its agents, sessions, quests,
+and Hermes approval alerts together. This never changes Hermes's default or
+starts another process. An empty view means no live sessions have arrived for
+that profile, not that its sessions are idle.
 
 For an arbitrary custom home, set
 `HERMES_HOME` to that profile's Hermes home before installation and keep the same

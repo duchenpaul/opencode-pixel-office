@@ -89,8 +89,7 @@ type OfficeStatePayload = {
   lastTodoSummary?: TodoSummary | null;
   bossMessage?: BossMessage | null;
   networkIp?: string | null;
-  hermesProfiles?: string[];
-  hermesDefaultProfile?: string;
+  hermesActiveProfile?: string | null;
 };
 
 const createSocketUrl = () => {
@@ -111,8 +110,7 @@ export const useOfficeState = () => {
   const [lastTodoSummary, setLastTodoSummary] = useState<TodoSummary | null>(null);
   const [bossMessage, setBossMessage] = useState<BossMessage | null>(null);
   const [networkIp, setNetworkIp] = useState<string | null>(null);
-  const [hermesProfiles, setHermesProfiles] = useState<string[]>([]);
-  const [hermesDefaultProfile, setHermesDefaultProfile] = useState("dev-team");
+  const [hermesActiveProfile, setHermesActiveProfile] = useState<string | null>(null);
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -144,8 +142,7 @@ export const useOfficeState = () => {
             setLastTodoSummary(nextState.lastTodoSummary || null);
             setBossMessage(nextState.bossMessage || null);
             setNetworkIp(nextState.networkIp || null);
-            setHermesProfiles(nextState.hermesProfiles || []);
-            setHermesDefaultProfile(nextState.hermesDefaultProfile || "dev-team");
+            setHermesActiveProfile(nextState.hermesActiveProfile ?? null);
             if (nextState.activeSessionId) {
               const nextActive = nextState.activeSessionId ?? null;
               setSelectedSessionId((current) => current ?? nextActive);
@@ -214,8 +211,7 @@ export const useOfficeState = () => {
     lastTodoSummary,
     bossMessage,
     networkIp,
-    hermesProfiles,
-    hermesDefaultProfile,
+    hermesActiveProfile,
     setSelectedAgentId,
     setSelectedSessionId,
   };

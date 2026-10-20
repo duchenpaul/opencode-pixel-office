@@ -85,8 +85,10 @@ class HermesPluginTests(unittest.TestCase):
         with patch.dict("sys.modules", {"hermes_cli.profiles": profiles}):
             self.assertEqual(self.plugin._profile_name(), "dev-team")
 
-    def test_discovery_sends_only_profile_names_without_session_or_secrets(self):
+    def test_registration_reports_only_the_running_profile(self):
+        self.profile_patch.stop()
         profiles = Mock()
+        profiles.get_active_profile_name.return_value = "research"
         profiles.list_profiles.return_value = [
             Mock(name="unused"), Mock(name="unused"),
         ]
@@ -99,10 +101,19 @@ class HermesPluginTests(unittest.TestCase):
                 patch.object(self.plugin, "_resolve_endpoint", return_value="http://localhost/events"):
             self.plugin.register(Mock())
         event = self.event()
-        self.assertEqual(event["type"], "hermes.profiles")
-        self.assertEqual(event["properties"]["profiles"], ["dev-team", "research"])
+        self.assertEqual(event["type"], "hermes.profile")
+        self.assertEqual(event["properties"], {"profile": "research"})
+        profiles.list_profiles.assert_not_called()
         self.assertNotIn("sessionID", event["properties"])
         self.assertNotIn("must-not-be-forwarded", json.dumps(event))
+
+    def test_registration_does_not_invent_an_unknown_profile(self):
+        with patch.object(self.plugin, "_profile_name", return_value=""), \
+                patch.object(self.plugin.threading, "Thread"), \
+                patch.object(self.plugin.atexit, "register"), \
+                patch.object(self.plugin, "_resolve_endpoint", return_value="http://localhost/events"):
+            self.plugin.register(Mock())
+        self.assertTrue(self.plugin._events.empty())
 
     def test_turn_end_is_idle_and_only_finalization_removes_the_session(self):
         self.hook("pre_llm_call", session_id="one")

@@ -184,7 +184,7 @@ test("Hermes home defaults to the current user's .hermes directory", (t) => {
   assert.equal(fs.existsSync(path.join(f.home, ".hermes/plugins/opencode-pixel-office/plugin.yaml")), true);
 });
 
-test("a named Hermes profile installs into its existing home and sets the dashboard default", (t) => {
+test("a named Hermes profile installs into its existing home without setting a dashboard default", (t) => {
   const f = fixture(t);
   const profileHome = path.join(f.env.HERMES_HOME, "profiles", "dev-team");
   fs.mkdirSync(profileHome, { recursive: true });
@@ -194,7 +194,7 @@ test("a named Hermes profile installs into its existing home and sets the dashbo
   assert.equal(fs.existsSync(path.join(plugin, "__init__.py")), true);
   assert.equal(fs.existsSync(f.plugin), false);
   const config = JSON.parse(fs.readFileSync(path.join(f.home, ".opencode/pixel-office/config.json")));
-  assert.equal(config.hermesProfile, "dev-team");
+  assert.equal("hermesProfile" in config, false);
   assert.match(f.run("status", "--hermes-profile", "dev-team").stdout, /enabled at last install/);
   assert.equal(f.run("uninstall", "--hermes-profile", "dev-team").status, 0);
   assert.equal(fs.existsSync(plugin), false);

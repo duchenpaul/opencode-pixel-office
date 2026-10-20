@@ -186,14 +186,15 @@ test("Hermes thinking status remains authoritative beyond the generic idle timeo
   assert.equal(state.sessions[0].status, "idle");
 });
 
-test("Hermes profile discovery and identical session IDs remain isolated by profile", async (t) => {
+test("Hermes runtime profiles and identical session IDs remain isolated by profile", async (t) => {
   const { post, base } = await startServer(t);
   const discovery = await post({
-    source: "hermes", type: "hermes.profiles",
-    properties: { profiles: ["default", "dev-team", "research", "dev-team"] },
+    source: "hermes", type: "hermes.profile",
+    properties: { profile: "research" },
   });
-  assert.equal(discovery.hermesDefaultProfile, "dev-team");
-  assert.deepEqual(new Set(discovery.hermesProfiles), new Set(["default", "dev-team", "research"]));
+  assert.equal(discovery.hermesActiveProfile, "research");
+  assert.equal(discovery.sessions.length, 0);
+  assert.equal(discovery.agents.length, 0);
   const sendProfile = (type, profile, extra = {}) => post({
     source: "hermes", type,
     properties: {
@@ -201,8 +202,10 @@ test("Hermes profile discovery and identical session IDs remain isolated by prof
       ...extra,
     },
   });
-  await sendProfile("session.created", "dev-team");
-  let state = await sendProfile("permission.asked", "research");
+  let state = await sendProfile("session.created", "dev-team");
+  assert.equal(state.hermesActiveProfile, "dev-team");
+  state = await sendProfile("permission.asked", "research");
+  assert.equal(state.hermesActiveProfile, "research");
   assert.equal(state.agents.length, 2);
   assert.equal(state.agents.find((a) => a.profile === "dev-team").status, "idle");
   assert.equal(state.agents.find((a) => a.profile === "research").status, "waiting");
@@ -217,20 +220,43 @@ test("Hermes profile discovery and identical session IDs remain isolated by prof
   state = await sendProfile("session.deleted", "dev-team");
   assert.equal(state.agents.length, 2);
   assert.ok(state.agents.every((a) => a.profile === "research"));
-  for (const properties of [{ profiles: ["../bad"] }, { profiles: "dev-team" }]) {
+  for (const properties of [{ profile: "../bad" }, { profile: "" }, { profile: ["research"] }, {}]) {
     const response = await fetch(`${base}/events`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source: "hermes", type: "hermes.profiles", properties }),
+      body: JSON.stringify({ source: "hermes", type: "hermes.profile", properties }),
     });
     assert.equal(response.status, 400);
   }
 });
 
-test("Hermes dashboard default uses the explicitly installed profile", async (t) => {
-  const { snapshot } = await startServer(t, { hermesProfile: "research" });
-  const state = await snapshot();
-  assert.equal(state.hermesDefaultProfile, "research");
-  assert.ok(state.hermesProfiles.includes("research"));
+test("Hermes active profile comes only from runtime events, never installation settings", async (t) => {
+  const { snapshot, post, send } = await startServer(t, { hermesProfile: "dev-team" });
+  let state = await snapshot();
+  assert.equal(state.hermesActiveProfile, null);
+  assert.equal("hermesDefaultProfile" in state, false);
+  assert.equal("hermesProfiles" in state, false);
+  state = await post({
+    source: "hermes", type: "hermes.profile", properties: { profile: "default" },
+  });
+  assert.equal(state.hermesActiveProfile, "default");
+  state = await send("session.created", "opencode", {}, "opencode");
+  assert.equal(state.hermesActiveProfile, "default");
+  state = await send("session.created", "legacy");
+  assert.equal(state.hermesActiveProfile, null);
+  assert.equal(state.agents.find((agent) => agent.source === "hermes").profile, "");
+});
+
+test("Hermes activity without repeated profile metadata retains the resolved runtime profile", async (t) => {
+  const { post, send } = await startServer(t);
+  await post({
+    source: "hermes", type: "session.created",
+    properties: { sessionID: "research-session", info: { profile: "research" } },
+  });
+  await post({
+    source: "hermes", type: "hermes.profile", properties: { profile: "default" },
+  });
+  const state = await send("session.updated", "research-session");
+  assert.equal(state.hermesActiveProfile, "research");
 });
 
 test("Claude hooks create independent helpers and clear approval on tool completion", async (t) => {

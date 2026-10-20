@@ -67,7 +67,7 @@ opencode-pixel-office --version    # Show version
 
 - `--port <number>` - Custom port (default: 5100)
 - `--hermes-profile <name>` - Existing Hermes profile for `install`, `status`,
-  and `uninstall`; installation also saves the dashboard's initial profile.
+  and `uninstall`; the dashboard detects the running profile independently.
 
 ## Using with OpenCode
 
@@ -99,12 +99,15 @@ hermes --profile dev-team
 ```
 
 The plugin is installed inside that profile's home, not just the default home.
-Repeat for other profiles you want to observe. The Hermes dropdown initially
-selects `dev-team` unless a different installation profile was saved. It lists
-profiles reported by Hermes at plugin load and profiles seen in events, and
-filters their sessions, agents, quests, and Hermes approval alerts. Switching
-it never changes Hermes's default or running processes. Profiles without
-events show an empty view. Unprofiled events are kept separate.
+Repeat for other profiles you want to observe. The read-only **Active Hermes
+profile** label reports the running profile, not an installation setting or
+hardcoded default. Only the current profile is collected at plugin load;
+inactive profiles are not listed. If multiple profiles are running, the
+dashboard automatically follows the one most recently reporting activity,
+including its sessions, agents, quests, and Hermes approval alerts. It never
+changes Hermes's default or running processes. Before runtime events arrive,
+the label shows **Awaiting Hermes**. Unprofiled events show **Unspecified
+profile** and remain separate.
 
 **Assigned Session** displays the full session ID and, when the profile is
 known, a selectable terminal command to resume it in that profile. Status stays

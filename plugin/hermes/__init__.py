@@ -89,20 +89,17 @@ def _profile_name() -> str:
         return ""
 
 
-def _publish_profiles() -> None:
+def _publish_profile() -> None:
     try:
-        from hermes_cli.profiles import list_profiles
-        names = {profile.name for profile in list_profiles()}
         current = _profile_name()
         if current:
-            names.add(current)
-        _enqueue({
-            "source": "hermes",
-            "type": "hermes.profiles",
-            "properties": {"profiles": sorted(names)},
-        })
+            _enqueue({
+                "source": "hermes",
+                "type": "hermes.profile",
+                "properties": {"profile": current},
+            })
     except (ImportError, OSError, ValueError) as exc:
-        logger.warning("Pixel Office could not discover Hermes profiles: %s", exc)
+        logger.warning("Pixel Office could not report the active Hermes profile: %s", exc)
 
 
 def _remember(sid: str, kw: dict[str, Any]) -> None:
@@ -306,5 +303,5 @@ def register(ctx: Any) -> None:
                  "subagent_start", "subagent_stop", "pre_approval_request",
                  "post_approval_response", "pre_llm_call", "pre_api_request", "post_llm_call"):
         ctx.register_hook(hook, _observer(hook))
-    _publish_profiles()
+    _publish_profile()
     logger.info("Pixel Office observers registered: %s", _endpoint)

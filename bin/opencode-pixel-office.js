@@ -394,9 +394,6 @@ const installApp = async (port) => {
   if (port) {
     configData.port = port;
   }
-  if (profileArg) {
-    configData.hermesProfile = profileArg;
-  }
   saveConfig(configData);
 
   // npm install
